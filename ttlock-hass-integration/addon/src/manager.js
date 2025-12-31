@@ -2,6 +2,7 @@
 
 const EventEmitter = require('events');
 const store = require("./store");
+const { TTLockError, ErrorCodes } = require("./errors");
 const { TTLockClient, AudioManage, LockedStatus, LogOperateCategory, LogOperateNames } = require("ttlock-sdk-js");
 
 const ScanType = Object.freeze({
@@ -156,78 +157,111 @@ class Manager extends EventEmitter {
   /**
    * Init a new lock
    * @param {string} address MAC address
+   * @throws {TTLockError} If lock not found, connection fails, or initialization fails
    */
   async initLock(address) {
     const lock = this.newLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        let res = await lock.initLock();
-        if (res != false) {
-          this.pairedLocks.set(lock.getAddress(), lock);
-          this.newLocks.delete(lock.getAddress());
-          this._bindLockEvents(lock);
-          this.emit("lockPaired", lock);
-          return true;
-        }
-        return false;
-      } catch (error) {
-        console.error(error);
-        return false;
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Lock ${address} not found in discoverable locks`);
     }
-    return false;
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.initLock();
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.INIT_FAILED, `Failed to initialize lock ${address}`);
+      }
+      this.pairedLocks.set(lock.getAddress(), lock);
+      this.newLocks.delete(lock.getAddress());
+      this._bindLockEvents(lock);
+      this.emit("lockPaired", lock);
+      return true;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.INIT_FAILED, `Lock initialization failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Unlock a paired lock
+   * @param {string} address MAC address
+   * @throws {TTLockError} If lock not found, connection fails, or unlock fails
+   */
   async unlockLock(address) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.unlock();
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.unlock();
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to unlock ${address}`);
+      }
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Unlock failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Lock a paired lock
+   * @param {string} address MAC address
+   * @throws {TTLockError} If lock not found, connection fails, or lock fails
+   */
   async lockLock(address) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.lock();
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.lock();
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to lock ${address}`);
+      }
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Lock failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Set auto-lock time for a lock
+   * @param {string} address MAC address
+   * @param {number} value Auto-lock time in seconds
+   * @throws {TTLockError} If lock not found, connection fails, or operation fails
+   */
   async setAutoLock(address, value) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.setAutoLockTime(value);
-        this.emit("lockUpdated", lock);
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.setAutoLockTime(value);
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Failed to set auto-lock for ${address}`);
+      }
+      this.emit("lockUpdated", lock);
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Set auto-lock failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
   async getCredentials(address) {
@@ -241,248 +275,347 @@ class Manager extends EventEmitter {
     };
   }
 
+  /**
+   * Add a passcode to a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async addPasscode(address, type, passCode, startDate, endDate) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasPassCode()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.addPassCode(type, passCode, startDate, endDate);
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasPassCode()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.addPassCode(type, passCode, startDate, endDate);
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to add passcode to ${address}`);
+      }
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Add passcode failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Update a passcode on a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async updatePasscode(address, type, oldPasscode, newPasscode, startDate, endDate) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasPassCode()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.updatePassCode(type, oldPasscode, newPasscode, startDate, endDate);
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasPassCode()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.updatePassCode(type, oldPasscode, newPasscode, startDate, endDate);
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to update passcode on ${address}`);
+      }
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Update passcode failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Delete a passcode from a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async deletePasscode(address, type, passCode) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasPassCode()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.deletePassCode(type, passCode);
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasPassCode()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.deletePassCode(type, passCode);
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to delete passcode from ${address}`);
+      }
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Delete passcode failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Get all passcodes from a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async getPasscodes(address) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasPassCode()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const passcodes = await lock.getPassCodes();
-        return passcodes;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasPassCode()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const passcodes = await lock.getPassCodes();
+      return passcodes;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Get passcodes failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Add a card to a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async addCard(address, startDate, endDate, alias) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasICCard()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const card = await lock.addICCard(startDate, endDate);
-        store.setCardAlias(card, alias);
-        return card;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasICCard()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const card = await lock.addICCard(startDate, endDate);
+      if (!card) {
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to add card to ${address}`);
+      }
+      store.setCardAlias(card, alias);
+      return card;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.CARD_FAILED, `Add card failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Update a card on a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async updateCard(address, card, startDate, endDate, alias) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasICCard()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const result = await lock.updateICCard(card, startDate, endDate);
-        store.setCardAlias(card, alias);
-        return result;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasICCard()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const result = await lock.updateICCard(card, startDate, endDate);
+      if (result === false) {
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to update card on ${address}`);
+      }
+      store.setCardAlias(card, alias);
+      return result;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.CARD_FAILED, `Update card failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Delete a card from a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async deleteCard(address, card) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasICCard()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const result = await lock.deleteICCard(card);
-        store.deleteCardAlias(card);
-        return result;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasICCard()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const result = await lock.deleteICCard(card);
+      if (result === false) {
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to delete card from ${address}`);
+      }
+      store.deleteCardAlias(card);
+      return result;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.CARD_FAILED, `Delete card failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Get all cards from a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async getCards(address) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasICCard()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        let cards = await lock.getICCards();
-        if (cards.length > 0) {
-          for (let card of cards) {
-            card.alias = store.getCardAlias(card.cardNumber);
-          }
-        }
-        return cards;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasICCard()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      let cards = await lock.getICCards();
+      if (cards.length > 0) {
+        for (let card of cards) {
+          card.alias = store.getCardAlias(card.cardNumber);
+        }
+      }
+      return cards;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.CARD_FAILED, `Get cards failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Add a fingerprint to a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async addFinger(address, startDate, endDate, alias) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasFingerprint()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const finger = await lock.addFingerprint(startDate, endDate);
-        store.setFingerAlias(finger, alias);
-        return finger;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasFingerprint()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const finger = await lock.addFingerprint(startDate, endDate);
+      if (!finger) {
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to add fingerprint to ${address}`);
+      }
+      store.setFingerAlias(finger, alias);
+      return finger;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Add fingerprint failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Update a fingerprint on a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async updateFinger(address, finger, startDate, endDate, alias) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasFingerprint()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const result = await lock.updateFingerprint(finger, startDate, endDate);
-        store.setFingerAlias(finger, alias);
-        return result;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasFingerprint()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const result = await lock.updateFingerprint(finger, startDate, endDate);
+      if (result === false) {
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to update fingerprint on ${address}`);
+      }
+      store.setFingerAlias(finger, alias);
+      return result;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Update fingerprint failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Delete a fingerprint from a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async deleteFinger(address, finger) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasFingerprint()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const result = await lock.deleteFingerprint(finger);
-        store.deleteFingerAlias(finger);
-        return result;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasFingerprint()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const result = await lock.deleteFingerprint(finger);
+      if (result === false) {
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to delete fingerprint from ${address}`);
+      }
+      store.deleteFingerAlias(finger);
+      return result;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Delete fingerprint failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Get all fingerprints from a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async getFingers(address) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasFingerprint()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        let fingers = await lock.getFingerprints();
-        if (fingers.length > 0) {
-          for (let finger of fingers) {
-            finger.alias = store.getFingerAlias(finger.fpNumber);
-          }
-        }
-        return fingers;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasFingerprint()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      let fingers = await lock.getFingerprints();
+      if (fingers.length > 0) {
+        for (let finger of fingers) {
+          finger.alias = store.getFingerAlias(finger.fpNumber);
+        }
+      }
+      return fingers;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Get fingerprints failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
   async setAudio(address, audio) {
@@ -572,24 +705,29 @@ class Manager extends EventEmitter {
   }
 
   /**
-   * 
+   * Connect to a lock
    * @param {import('ttlock-sdk-js').TTLock} lock 
    * @param {boolean} readData 
+   * @throws {TTLockError} If scanning is active or connection fails
    */
   async _connectLock(lock, readData = true) {
-    if (this.scanning) return false;
+    if (this.scanning) {
+      throw new TTLockError(ErrorCodes.BLE_SCAN_ACTIVE, 'Cannot connect while scanning is active');
+    }
+    
     if (!lock.isConnected()) {
       try {
         const res = await lock.connect(!readData);
         if (!res) {
-          console.log("Connect to lock failed", lock.getAddress());
-          return false;
+          const address = lock.getAddress();
+          console.log("Connect to lock failed", address);
+          throw new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Failed to connect to lock ${address}`, { address });
         }
       } catch (error) {
+        if (error instanceof TTLockError) throw error;
         console.error(error);
-        return false;
+        throw new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Connection failed: ${error.message}`, { originalError: error.message });
       }
-      return true;
     }
     return true;
   }
