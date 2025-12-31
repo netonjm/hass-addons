@@ -13,6 +13,13 @@ const ScanType = Object.freeze({
 
 const SCAN_MAX = 3;
 
+// Retry configuration
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  retryDelay: 1500,  // ms between retries
+  operationRetries: 2  // retries for operations like unlock/lock
+};
+
 /**
  * Sleep for
  * @param ms miliseconds
@@ -21,6 +28,32 @@ async function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+/**
+ * Retry an async operation with exponential backoff
+ * @param {Function} operation - Async function to retry
+ * @param {number} maxRetries - Maximum number of retries
+ * @param {number} delay - Initial delay between retries in ms
+ * @param {string} operationName - Name for logging purposes
+ * @returns {Promise<any>} Result of the operation
+ */
+async function retryOperation(operation, maxRetries = RETRY_CONFIG.operationRetries, delay = RETRY_CONFIG.retryDelay, operationName = 'operation') {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      console.log(`${operationName} attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+      if (attempt < maxRetries) {
+        const waitTime = delay * attempt; // Simple backoff
+        console.log(`Retrying ${operationName} in ${waitTime}ms...`);
+        await sleep(waitTime);
+      }
+    }
+  }
+  throw lastError;
 }
 /**
  * Events:
@@ -195,19 +228,29 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.unlock();
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to unlock ${address}`);
+    return await retryOperation(async () => {
+      await this._connectLock(lock);
+      
+      try {
+        // Check current state before attempting unlock
+        const currentStatus = await lock.getLockStatus();
+        if (currentStatus === LockedStatus.UNLOCKED) {
+          console.log(`Lock ${address} is already unlocked, skipping operation`);
+          this.emit("lockUnlock", lock);
+          return true;
+        }
+        
+        const res = await lock.unlock();
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to unlock ${address}`);
+        }
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Unlock failed: ${error.message}`, { address, originalError: error.message });
       }
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Unlock failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, RETRY_CONFIG.operationRetries, RETRY_CONFIG.retryDelay, `unlock ${address}`);
   }
 
   /**
@@ -221,19 +264,29 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.lock();
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to lock ${address}`);
+    return await retryOperation(async () => {
+      await this._connectLock(lock);
+      
+      try {
+        // Check current state before attempting lock
+        const currentStatus = await lock.getLockStatus();
+        if (currentStatus === LockedStatus.LOCKED) {
+          console.log(`Lock ${address} is already locked, skipping operation`);
+          this.emit("lockLock", lock);
+          return true;
+        }
+        
+        const res = await lock.lock();
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to lock ${address}`);
+        }
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Lock failed: ${error.message}`, { address, originalError: error.message });
       }
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Lock failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, RETRY_CONFIG.operationRetries, RETRY_CONFIG.retryDelay, `lock ${address}`);
   }
 
   /**
@@ -729,26 +782,46 @@ class Manager extends EventEmitter {
    * Connect to a lock
    * @param {import('ttlock-sdk-js').TTLock} lock 
    * @param {boolean} readData 
-   * @throws {TTLockError} If scanning is active or connection fails
+   * @param {number} maxRetries Maximum number of connection attempts (default: 3)
+   * @param {number} retryDelay Delay between retries in ms (default: 1000)
+   * @throws {TTLockError} If scanning is active or connection fails after all retries
    */
-  async _connectLock(lock, readData = true) {
+  async _connectLock(lock, readData = true, maxRetries = 3, retryDelay = 1000) {
     if (this.scanning) {
       throw new TTLockError(ErrorCodes.BLE_SCAN_ACTIVE, 'Cannot connect while scanning is active');
     }
     
     if (!lock.isConnected()) {
-      try {
-        const res = await lock.connect(!readData);
-        if (!res) {
-          const address = lock.getAddress();
-          console.log("Connect to lock failed", address);
-          throw new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Failed to connect to lock ${address}`, { address });
+      const address = lock.getAddress();
+      let lastError = null;
+      
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`Connection attempt ${attempt}/${maxRetries} to ${address}`);
+          const res = await lock.connect(!readData);
+          if (res) {
+            if (attempt > 1) {
+              console.log(`Connected to ${address} on attempt ${attempt}`);
+            }
+            return true;
+          }
+          lastError = new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Failed to connect to lock ${address}`, { address, attempt });
+        } catch (error) {
+          lastError = error instanceof TTLockError ? error : 
+            new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Connection failed: ${error.message}`, { originalError: error.message, attempt });
+          console.log(`Connection attempt ${attempt} failed: ${error.message}`);
         }
-      } catch (error) {
-        if (error instanceof TTLockError) throw error;
-        console.error(error);
-        throw new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Connection failed: ${error.message}`, { originalError: error.message });
+        
+        // Wait before retrying (except on last attempt)
+        if (attempt < maxRetries) {
+          console.log(`Retrying in ${retryDelay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
       }
+      
+      // All retries exhausted
+      console.log(`Connect to lock failed after ${maxRetries} attempts`, address);
+      throw lastError || new TTLockError(ErrorCodes.BLE_CONNECTION_FAILED, `Failed to connect to lock ${address} after ${maxRetries} attempts`, { address, attempts: maxRetries });
     }
     return true;
   }
