@@ -1,8 +1,9 @@
-'use stricet';
+'use strict';
 
 const mqtt = require('async-mqtt');
 const manager = require('./manager');
 const { LockedStatus } = require('ttlock-sdk-js');
+const { TTLockError, ErrorCodes } = require('./errors');
 
 class HomeAssistant {
   /**
@@ -22,6 +23,10 @@ class HomeAssistant {
     this.configuredLocks = new Set();
 
     this.connected = false;
+    this.reconnecting = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 5000; // 5 seconds
 
     manager.on("lockPaired", this._onLockPaired.bind(this));
     manager.on("lockConnected", this._onLockConnected.bind(this));
@@ -31,16 +36,88 @@ class HomeAssistant {
   }
 
   async connect() {
-    if (!this.connected) {
+    if (this.connected) {
+      return true;
+    }
+
+    try {
       this.client = await mqtt.connectAsync(this.mqttUrl, {
         username: this.mqttUser,
-        password: this.mqttPass
+        password: this.mqttPass,
+        reconnectPeriod: this.reconnectDelay,
+        connectTimeout: 30000
       });
+
+      // Setup event handlers
       this.client.on("message", this._onMQTTMessage.bind(this));
+      this.client.on("error", this._onMQTTError.bind(this));
+      this.client.on("offline", this._onMQTTOffline.bind(this));
+      this.client.on("reconnect", this._onMQTTReconnect.bind(this));
+      this.client.on("close", this._onMQTTClose.bind(this));
+
       await this.client.subscribe("ttlock/+/set");
       this.connected = true;
-      console.log("MQTT connected");
+      this.reconnectAttempts = 0;
+      console.log("MQTT connected to", this.mqttUrl);
+      return true;
+    } catch (error) {
+      console.error("MQTT connection failed:", error.message);
+      this.connected = false;
+      this._scheduleReconnect();
+      return false;
     }
+  }
+
+  /**
+   * Handle MQTT errors
+   * @param {Error} error
+   */
+  _onMQTTError(error) {
+    console.error("MQTT error:", error.message);
+  }
+
+  /**
+   * Handle MQTT offline event
+   */
+  _onMQTTOffline() {
+    console.warn("MQTT connection offline");
+    this.connected = false;
+  }
+
+  /**
+   * Handle MQTT reconnect event
+   */
+  _onMQTTReconnect() {
+    this.reconnectAttempts++;
+    console.log(`MQTT reconnecting... (attempt ${this.reconnectAttempts})`);
+  }
+
+  /**
+   * Handle MQTT close event
+   */
+  _onMQTTClose() {
+    console.warn("MQTT connection closed");
+    this.connected = false;
+  }
+
+  /**
+   * Schedule a reconnection attempt
+   */
+  _scheduleReconnect() {
+    if (this.reconnecting) return;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`MQTT: Max reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
+      return;
+    }
+
+    this.reconnecting = true;
+    this.reconnectAttempts++;
+    console.log(`MQTT: Scheduling reconnect in ${this.reconnectDelay / 1000}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+    setTimeout(async () => {
+      this.reconnecting = false;
+      await this.connect();
+    }, this.reconnectDelay);
   }
 
   /**
@@ -57,7 +134,16 @@ class HomeAssistant {
    * @param {import('ttlock-sdk-js').TTLock} lock 
    */
   async configureLock(lock) {
-    if (this.connected && !this.configuredLocks.has(lock.getAddress())) {
+    if (!this.connected) {
+      console.warn("MQTT not connected, skipping lock configuration");
+      return;
+    }
+    
+    if (this.configuredLocks.has(lock.getAddress())) {
+      return;
+    }
+
+    try {
       // setup lock entity
       const id = this.getLockId(lock);
       const name = lock.getName();
@@ -90,7 +176,7 @@ class HomeAssistant {
       if (process.env.MQTT_DEBUG == "1") {
         console.log("MQTT Publish", configLockTopic, JSON.stringify(lockPayload));
       }
-      let res = await this.client.publish(configLockTopic, JSON.stringify(lockPayload), { retain: true });
+      await this.client.publish(configLockTopic, JSON.stringify(lockPayload), { retain: true });
 
       // setup battery sensor
       const configBatteryTopic = this.discovery_prefix + "/sensor/" + id + "/battery/config";
@@ -106,7 +192,7 @@ class HomeAssistant {
       if (process.env.MQTT_DEBUG == "1") {
         console.log("MQTT Publish", configBatteryTopic, JSON.stringify(batteryPayload));
       }
-      res = await this.client.publish(configBatteryTopic, JSON.stringify(batteryPayload), { retain: true });
+      await this.client.publish(configBatteryTopic, JSON.stringify(batteryPayload), { retain: true });
 
       // setup rssi sensor
       const configRssiTopic = this.discovery_prefix + "/sensor/" + id + "/rssi/config";
@@ -122,9 +208,12 @@ class HomeAssistant {
       if (process.env.MQTT_DEBUG == "1") {
         console.log("MQTT Publish", configRssiTopic, JSON.stringify(rssiPayload));
       }
-      res = await this.client.publish(configRssiTopic, JSON.stringify(rssiPayload), { retain: true });
+      await this.client.publish(configRssiTopic, JSON.stringify(rssiPayload), { retain: true });
 
       this.configuredLocks.add(lock.getAddress());
+      console.log("MQTT: Lock configured:", lock.getAddress());
+    } catch (error) {
+      console.error("MQTT: Failed to configure lock:", lock.getAddress(), error.message);
     }
   }
 
@@ -133,7 +222,12 @@ class HomeAssistant {
    * @param {import('ttlock-sdk-js').TTLock} lock 
    */
   async updateLockState(lock) {
-    if (this.connected) {
+    if (!this.connected) {
+      console.warn("MQTT not connected, skipping state update");
+      return;
+    }
+
+    try {
       const id = this.getLockId(lock);
       const stateTopic = "ttlock/" + id;
       const lockedStatus = await lock.getLockStatus();
@@ -148,7 +242,9 @@ class HomeAssistant {
       if (process.env.MQTT_DEBUG == "1") {
         console.log("MQTT Publish", stateTopic, JSON.stringify(statePayload));
       }
-      const res = await this.client.publish(stateTopic, JSON.stringify(statePayload), { retain: true });
+      await this.client.publish(stateTopic, JSON.stringify(statePayload), { retain: true });
+    } catch (error) {
+      console.error("MQTT: Failed to update lock state:", lock.getAddress(), error.message);
     }
   }
 
@@ -193,11 +289,11 @@ class HomeAssistant {
   }
 
   /**
-   * 
+   * Handle incoming MQTT messages (lock/unlock commands from HA)
    * @param {string} topic 
    * @param {Buffer} message 
    */
-  _onMQTTMessage(topic, message) {
+  async _onMQTTMessage(topic, message) {
     /**
      * Topic: ttlock/e1581b3a605e/set
        Message: UNLOCK
@@ -216,13 +312,26 @@ class HomeAssistant {
       if (process.env.MQTT_DEBUG == "1") {
         console.log("MQTT command:", address, command);
       }
-      switch (command) {
-        case "LOCK":
-          manager.lockLock(address);
-          break;
-        case "UNLOCK":
-          manager.unlockLock(address);
-          break;
+      
+      try {
+        switch (command) {
+          case "LOCK":
+            await manager.lockLock(address);
+            console.log("MQTT: Lock command successful for", address);
+            break;
+          case "UNLOCK":
+            await manager.unlockLock(address);
+            console.log("MQTT: Unlock command successful for", address);
+            break;
+          default:
+            console.warn("MQTT: Unknown command:", command);
+        }
+      } catch (error) {
+        console.error("MQTT: Command failed:", command, address, error.message);
+        // Optionally publish error state back to HA
+        if (error instanceof TTLockError) {
+          console.error("MQTT: Error code:", error.code);
+        }
       }
     } else if (process.env.MQTT_DEBUG == "1") {
       console.log("Topic:", topic);

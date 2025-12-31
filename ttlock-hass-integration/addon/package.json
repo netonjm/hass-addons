@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node ./index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node tests/errors.test.js && node tests/store.test.js && node tests/integration.test.js",
+    "test:errors": "node tests/errors.test.js",
+    "test:store": "node tests/store.test.js",
+    "test:integration": "node tests/integration.test.js"
   },
   "repository": {
     "type": "git",

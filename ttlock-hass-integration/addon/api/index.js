@@ -4,6 +4,7 @@ const { sleep } = require('ttlock-sdk-js');
 const WebSocket = require('ws');
 const manager = require("../src/manager");
 const store = require('../src/store');
+const { TTLockError, ErrorCodes } = require('../src/errors');
 const Message = require("./Message");
 const WsApi = require("./WsApi");
 
@@ -49,39 +50,45 @@ module.exports = async (server) => {
 
           case "pair": // pair a lock
             if (msg.data && msg.data.address) {
-              const paired = await manager.initLock(msg.data.address);
-              if (!paired) {
+              try {
+                await manager.initLock(msg.data.address);
+              } catch (error) {
                 const locks = manager.getNewVisible();
                 const lock = locks.get(msg.data.address);
                 if (lock) {
                   WsApi.sendLockStatus(wss, lock);
                 }
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: error.message, code: ErrorCodes.UNKNOWN_ERROR }, msg);
               }
             }
             break;
 
           case "lock": // lock a lock
             if (msg.data && msg.data.address) {
-              const result = await manager.lockLock(msg.data.address);
-              if (!result) {
+              try {
+                await manager.lockLock(msg.data.address);
+              } catch (error) {
                 const locks = manager.getPairedVisible();
                 const lock = locks.get(msg.data.address);
                 if (lock) {
                   WsApi.sendLockStatus(wss, lock);
                 }
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: error.message, code: ErrorCodes.UNKNOWN_ERROR }, msg);
               }
             }
             break;
 
           case "unlock": // unlock a lock
             if (msg.data && msg.data.address) {
-              const result = await manager.unlockLock(msg.data.address);
-              if (!result) {
+              try {
+                await manager.unlockLock(msg.data.address);
+              } catch (error) {
                 const locks = manager.getPairedVisible();
                 const lock = locks.get(msg.data.address);
                 if (lock) {
                   WsApi.sendLockStatus(wss, lock);
                 }
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: error.message, code: ErrorCodes.UNKNOWN_ERROR }, msg);
               }
             }
             break;
@@ -93,11 +100,11 @@ module.exports = async (server) => {
                 break;
               }
 
-              const credentials = await manager.getCredentials(msg.data.address);
-              if (credentials !== false) {
+              try {
+                const credentials = await manager.getCredentials(msg.data.address);
                 api.sendCredentials(msg.data.address, credentials);
-              } else { // notify failure
-                api.sendError("Failed fetching credentials", msg);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "Failed fetching credentials", code: ErrorCodes.OPERATION_FAILED }, msg);
               }
             }
             break;
@@ -110,24 +117,19 @@ module.exports = async (server) => {
               }
 
               const passcode = msg.data.passcode;
-              let res = false;
-              if (passcode.passCode == -1) { // add
-                res = await manager.addPasscode(msg.data.address, passcode.type, passcode.newPassCode, passcode.startDate, passcode.endDate);
-              } else if (passcode.newPassCode == -1) { // delete
-                res = await manager.deletePasscode(msg.data.address, passcode.type, passcode.passCode);
-              } else { // update
-                res = await manager.updatePasscode(msg.data.address, passcode.type, passcode.passCode, passcode.newPassCode, passcode.startDate, passcode.endDate);
-              }
-              if (res) {
+              try {
+                if (passcode.passCode == -1) { // add
+                  await manager.addPasscode(msg.data.address, passcode.type, passcode.newPassCode, passcode.startDate, passcode.endDate);
+                } else if (passcode.newPassCode == -1) { // delete
+                  await manager.deletePasscode(msg.data.address, passcode.type, passcode.passCode);
+                } else { // update
+                  await manager.updatePasscode(msg.data.address, passcode.type, passcode.passCode, passcode.newPassCode, passcode.startDate, passcode.endDate);
+                }
                 // send updated passcode list
                 const passcodes = await manager.getPasscodes(msg.data.address);
-                if (passcodes !== false) {
-                  api.sendPasscodes(msg.data.address, passcodes);
-                } else { // notify failure
-                  api.sendError("Failed fetching PINs", msg);
-                }
-              } else { // notify failure
-                api.sendError("PIN operation failed", msg);
+                api.sendPasscodes(msg.data.address, passcodes);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "PIN operation failed", code: ErrorCodes.PASSCODE_FAILED }, msg);
               }
             }
             break;
@@ -140,24 +142,19 @@ module.exports = async (server) => {
               }
 
               const card = msg.data.card;
-              let res = false;
-              if (card.cardNumber == -1) { // add new card
-                res = await manager.addCard(msg.data.address, card.startDate, card.endDate, card.alias);
-              } else if (card.startDate == -1) { // delete
-                res = await manager.deleteCard(msg.data.address, card.cardNumber);
-              } else { // update
-                res = await manager.updateCard(msg.data.address, card.cardNumber, card.startDate, card.endDate, card.alias);
-              }
-              if (res === false || res == "") { // notify failure
-                api.sendError("Card operation failed", msg);
-              } else {
+              try {
+                if (card.cardNumber == -1) { // add new card
+                  await manager.addCard(msg.data.address, card.startDate, card.endDate, card.alias);
+                } else if (card.startDate == -1) { // delete
+                  await manager.deleteCard(msg.data.address, card.cardNumber);
+                } else { // update
+                  await manager.updateCard(msg.data.address, card.cardNumber, card.startDate, card.endDate, card.alias);
+                }
                 // send updated cards list
                 const cards = await manager.getCards(msg.data.address);
-                if (cards !== false) {
-                  api.sendCards(msg.data.address, cards);
-                } else { // notify failure
-                  api.sendError("Failed fetching cards", msg);
-                }
+                api.sendCards(msg.data.address, cards);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "Card operation failed", code: ErrorCodes.CARD_FAILED }, msg);
               }
             }
             break;
@@ -170,24 +167,19 @@ module.exports = async (server) => {
               }
 
               const finger = msg.data.finger;
-              let res = false;
-              if (finger.fpNumber == -1) { // add new finger
-                res = await manager.addFinger(msg.data.address, finger.startDate, finger.endDate, finger.alias);
-              } else if (finger.startDate == -1) { // delete
-                res = await manager.deleteFinger(msg.data.address, finger.fpNumber);
-              } else { // update
-                res = await manager.updateFinger(msg.data.address, finger.fpNumber, finger.startDate, finger.endDate, finger.alias);
-              }
-              if (res === false || res == "") { // notify failure
-                api.sendError("Fingerprint operation failed", msg);
-              } else {
+              try {
+                if (finger.fpNumber == -1) { // add new finger
+                  await manager.addFinger(msg.data.address, finger.startDate, finger.endDate, finger.alias);
+                } else if (finger.startDate == -1) { // delete
+                  await manager.deleteFinger(msg.data.address, finger.fpNumber);
+                } else { // update
+                  await manager.updateFinger(msg.data.address, finger.fpNumber, finger.startDate, finger.endDate, finger.alias);
+                }
                 // send updated fingerprints list
                 const fingers = await manager.getFingers(msg.data.address);
-                if (fingers !== false) {
-                  api.sendFingers(msg.data.address, fingers);
-                } else { // notify failure
-                  api.sendError("Failed fetching fingerprints", msg);
-                }
+                api.sendFingers(msg.data.address, fingers);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "Fingerprint operation failed", code: ErrorCodes.FINGERPRINT_FAILED }, msg);
               }
             }
             break;
@@ -197,26 +189,26 @@ module.exports = async (server) => {
               const settings = msg.data.settings;
               let confirmedSettings = {};
 
-              if (typeof settings.autolock != "undefined") {
-                confirmedSettings.autolock = await manager.setAutoLock(msg.data.address, parseInt(settings.autolock));
-                if (confirmedSettings.autolock !== true) {
-                  api.sendError("Unable to set auto-lock time", msg);
+              try {
+                if (typeof settings.autolock != "undefined") {
+                  await manager.setAutoLock(msg.data.address, parseInt(settings.autolock));
+                  confirmedSettings.autolock = true;
                 }
-              }
 
-              if (typeof settings.audio != "undefined") {
-                confirmedSettings.audio = await manager.setAudio(msg.data.address, settings.audio);
-                if (confirmedSettings.audio !== true) {
-                  api.sendError("Failed to set audio mode", msg);
+                if (typeof settings.audio != "undefined") {
+                  await manager.setAudio(msg.data.address, settings.audio);
+                  confirmedSettings.audio = true;
                 }
-              }
 
-              if (confirmedSettings.autolock || confirmedSettings.audio) {
-                // allow lock status update to be sent before sending configuration confirmation
-                await sleep(10);
-              }
+                if (confirmedSettings.autolock || confirmedSettings.audio) {
+                  // allow lock status update to be sent before sending configuration confirmation
+                  await sleep(10);
+                }
 
-              api.sendSettingsConfirmation(msg.data.address, confirmedSettings);
+                api.sendSettingsConfirmation(msg.data.address, confirmedSettings);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "Settings update failed", code: ErrorCodes.SETTINGS_FAILED }, msg);
+              }
             }
             break;
             
@@ -240,22 +232,22 @@ module.exports = async (server) => {
 
           case "operations":
             if (msg.data && msg.data.address) {
-              const operations = await manager.getOperationLog(msg.data.address);
-              if (operations === false) {
-                api.sendError("Failed getting operation log", msg);
-              } else {
+              try {
+                const operations = await manager.getOperationLog(msg.data.address);
                 api.sendOperationLog(msg.data.address, operations);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "Failed getting operation log", code: ErrorCodes.OPERATION_FAILED }, msg);
               }
             }
             break;
 
           case "unpair":
             if (msg.data && msg.data.address) {
-              const res = await manager.resetLock(msg.data.address);
-              if (res) {
+              try {
+                await manager.resetLock(msg.data.address);
                 // list update will handle the update
-              } else {
-                api.sendError("Failed to unpair lock", msg);
+              } catch (error) {
+                api.sendError(error instanceof TTLockError ? error.toJSON() : { message: "Failed to unpair lock", code: ErrorCodes.OPERATION_FAILED }, msg);
               }
             }
         }

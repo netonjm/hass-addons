@@ -618,90 +618,111 @@ class Manager extends EventEmitter {
     }
   }
 
+  /**
+   * Set audio on/off for a lock
+   * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
+   */
   async setAudio(address, audio) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!lock.hasLockSound()) {
-        return false;
-      }
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const sound = audio == true ? AudioManage.TURN_ON : AudioManage.TURN_OFF;
-        const res = await lock.setLockSound(sound);
-        this.emit("lockUpdated", lock);
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    if (!lock.hasLockSound()) {
+      throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support audio settings`);
+    }
+    
+    await this._connectLock(lock);
+    
+    try {
+      const sound = audio == true ? AudioManage.TURN_ON : AudioManage.TURN_OFF;
+      const res = await lock.setLockSound(sound);
+      if (res === false) {
+        throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Failed to set audio for ${address}`);
+      }
+      this.emit("lockUpdated", lock);
+      return res;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Set audio failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
+  /**
+   * Get operation log from a lock
+   * @throws {TTLockError} If lock not found, connection fails, or operation fails
+   */
   async getOperationLog(address, reload) {
     const lock = this.pairedLocks.get(address);
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
+    }
+    
     if (typeof reload == "undefined") {
       reload = false;
     }
-    if (typeof lock != "undefined") {
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        let operations = JSON.parse(JSON.stringify(await lock.getOperationLog(true, reload)));
-        let validOperations = [];
-        // console.log(operations);
-        for (let operation of operations) {
-          if (operation) {
-            operation.recordTypeName = LogOperateNames[operation.recordType];
-            if (LogOperateCategory.LOCK.includes(operation.recordType)) {
-              operation.recordTypeCategory = "LOCK";
-            } else if (LogOperateCategory.UNLOCK.includes(operation.recordType)) {
-              operation.recordTypeCategory = "UNLOCK";
-            } else if (LogOperateCategory.FAILED.includes(operation.recordType)) {
-              operation.recordTypeCategory = "FAILED";
-            } else {
-              operation.recordTypeCategory = "OTHER";
-            }
-            if (typeof operation.password != "undefined") {
-              if (LogOperateCategory.IC.includes(operation.recordType)) {
-                operation.passwordName = store.getCardAlias(operation.password);
-              } else if (LogOperateCategory.FR.includes(operation.recordType)) {
-                operation.passwordName = store.getFingerAlias(operation.password);
-              }
-            }
-            validOperations.push(operation);
+    
+    await this._connectLock(lock);
+    
+    try {
+      let operations = JSON.parse(JSON.stringify(await lock.getOperationLog(true, reload)));
+      let validOperations = [];
+      for (let operation of operations) {
+        if (operation) {
+          operation.recordTypeName = LogOperateNames[operation.recordType];
+          if (LogOperateCategory.LOCK.includes(operation.recordType)) {
+            operation.recordTypeCategory = "LOCK";
+          } else if (LogOperateCategory.UNLOCK.includes(operation.recordType)) {
+            operation.recordTypeCategory = "UNLOCK";
+          } else if (LogOperateCategory.FAILED.includes(operation.recordType)) {
+            operation.recordTypeCategory = "FAILED";
+          } else {
+            operation.recordTypeCategory = "OTHER";
           }
+          if (typeof operation.password != "undefined") {
+            if (LogOperateCategory.IC.includes(operation.recordType)) {
+              operation.passwordName = store.getCardAlias(operation.password);
+            } else if (LogOperateCategory.FR.includes(operation.recordType)) {
+              operation.passwordName = store.getFingerAlias(operation.password);
+            }
+          }
+          validOperations.push(operation);
         }
-        return validOperations;
-      } catch (error) {
-        console.error(error);
       }
-    } else {
-      return false;
+      return validOperations;
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Get operation log failed: ${error.message}`, { address, originalError: error.message });
     }
   }
 
+  /**
+   * Reset (unpair) a lock
+   * @throws {TTLockError} If lock not found, connection fails, or operation fails
+   */
   async resetLock(address) {
     const lock = this.pairedLocks.get(address);
-    if (typeof lock != "undefined") {
-      if (!(await this._connectLock(lock))) {
-        return false;
-      }
-      try {
-        const res = await lock.resetLock();
-        if (res) {
-          lock.removeAllListeners();
-          this.pairedLocks.delete(address);
-          this.emit("lockListChanged");
-        }
-        return res;
-      } catch (error) {
-        console.error(error);
-      }
+    if (!lock) {
+      throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
-    return false;
+    
+    await this._connectLock(lock);
+    
+    try {
+      const res = await lock.resetLock();
+      if (res) {
+        lock.removeAllListeners();
+        this.pairedLocks.delete(address);
+        this.emit("lockListChanged");
+        return res;
+      }
+      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to reset lock ${address}`);
+    } catch (error) {
+      if (error instanceof TTLockError) throw error;
+      console.error(error);
+      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Reset lock failed: ${error.message}`, { address, originalError: error.message });
+    }
   }
 
   /**
