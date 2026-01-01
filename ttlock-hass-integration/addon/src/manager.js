@@ -912,7 +912,8 @@ class Manager extends EventEmitter {
       // check if lock is known
       if (!this.pairedLocks.has(lock.getAddress())) {
         this._bindLockEvents(lock);
-        // add it to the list of known locks and connect it
+        // Add to pairedLocks immediately so it shows in UI even if connection fails
+        this.pairedLocks.set(lock.getAddress(), lock);
         console.log("Discovered paired lock:", lock.getAddress());
         if (this.client.isMonitoring()) {
           const result = await lock.connect();
@@ -977,7 +978,10 @@ class Manager extends EventEmitter {
    */
   async _onLockConnected(lock) {
     if (lock.isPaired()) {
-      this.pairedLocks.set(lock.getAddress(), lock);
+      // Lock should already be in pairedLocks from _onFoundLock, but ensure it's there
+      if (!this.pairedLocks.has(lock.getAddress())) {
+        this.pairedLocks.set(lock.getAddress(), lock);
+      }
       console.log("Connected to paired lock " + lock.getAddress());
       this.emit("lockConnected", lock);
     } else {
