@@ -2,26 +2,33 @@
 
 const HomeAssistant = require('./ha');
 
-/**
- * Handle the initialisation process
- * - load saved data
- * - create manager
- * - create express app
- * @param {Object} options
- * @param {string} options.settingsPath Path to the file in which lock data settings are saved
- * @param {string} options.mqttHost MQTT host
- * @param {string} options.mqttPort MQTT port
- * @param {string} options.mqttSSL MQTT ssl
- * @param {string} options.mqttUser MQTT username
- * @param {string} options.mqttPass MQTT password
- * @param {'none'|'noble'} options.gateway External BLE gateway type
- * @param {string} options.gateway_host Gateway hostname or IP
- * @param {number} options.gateway_port Gateway port
- * @param {string} options.gateway_key Gateway AES key
- * @param {string} options.gateway_user Gateway username
- * @param {string} options.gateway_pass  Gateway password
- */
-module.exports = async (options) => {
+// Export references for graceful shutdown
+let haInstance = null;
+let serverInstance = null;
+
+module.exports = {
+  ha: () => haInstance,
+  server: () => serverInstance,
+  /**
+   * Handle the initialisation process
+   * - load saved data
+   * - create manager
+   * - create express app
+   * @param {Object} options
+   * @param {string} options.settingsPath Path to the file in which lock data settings are saved
+   * @param {string} options.mqttHost MQTT host
+   * @param {string} options.mqttPort MQTT port
+   * @param {string} options.mqttSSL MQTT ssl
+   * @param {string} options.mqttUser MQTT username
+   * @param {string} options.mqttPass MQTT password
+   * @param {'none'|'noble'} options.gateway External BLE gateway type
+   * @param {string} options.gateway_host Gateway hostname or IP
+   * @param {number} options.gateway_port Gateway port
+   * @param {string} options.gateway_key Gateway AES key
+   * @param {string} options.gateway_user Gateway username
+   * @param {string} options.gateway_pass  Gateway password
+   */
+  init: async (options) => {
   // console.log("Options:", JSON.stringify(options));
   if (typeof options == "undefined") {
     options = {};
@@ -46,15 +53,14 @@ module.exports = async (options) => {
       options.gateway_pass
     );
   }
-  var ha;
   if (options.mqttHost && options.mqttUser && options.mqttPass) {
     const haOptions = {
       mqttUrl: (options.mqttSSL == 'true' ? 'mqtts://' : 'mqtt://') + options.mqttHost + ':' + options.mqttPort,
       mqttUser: options.mqttUser,
       mqttPass: options.mqttPass
     }
-    ha = new HomeAssistant(haOptions);
-    await ha.connect();
+    haInstance = new HomeAssistant(haOptions);
+    await haInstance.connect();
   }
 
   await manager.init();
@@ -89,10 +95,11 @@ module.exports = async (options) => {
   app.use("/frontend", express.static("frontend"));
   // app.use("/api", require("../api/index_old"));
 
-  const server = app.listen(port, () => {
+  serverInstance = app.listen(port, () => {
     console.log("Server started");
   });
 
   const api = require("../api/index");
-  api(server);
-}
+  api(serverInstance);
+  }
+};
