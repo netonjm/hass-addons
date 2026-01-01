@@ -836,11 +836,39 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.BLE_SCAN_ACTIVE, 'Cannot connect while scanning is active');
     }
     
+    const address = lock.getAddress();
+    
+    // Wait if connection is already in progress
+    if (lock.connecting) {
+      console.log(`Connection to ${address} already in progress, waiting...`);
+      let waitCycles = 100; // 10 seconds max
+      while (lock.connecting && waitCycles > 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitCycles--;
+      }
+      if (lock.isConnected()) {
+        console.log(`Connection to ${address} completed by another process`);
+        return true;
+      }
+      // If still not connected after waiting, continue with our connection attempt
+    }
+    
     if (!lock.isConnected()) {
-      const address = lock.getAddress();
       let lastError = null;
       
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // Check again if connected (might have been connected while waiting)
+        if (lock.isConnected()) {
+          return true;
+        }
+        
+        // Check if another connection started
+        if (lock.connecting) {
+          console.log(`Another connection started to ${address}, waiting...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          continue;
+        }
+        
         try {
           console.log(`Connection attempt ${attempt}/${maxRetries} to ${address}`);
           const res = await lock.connect(!readData);

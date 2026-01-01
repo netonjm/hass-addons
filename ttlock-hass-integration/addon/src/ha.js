@@ -54,6 +54,7 @@ class HomeAssistant {
       this.client.on("offline", this._onMQTTOffline.bind(this));
       this.client.on("reconnect", this._onMQTTReconnect.bind(this));
       this.client.on("close", this._onMQTTClose.bind(this));
+      this.client.on("connect", this._onMQTTConnect.bind(this));
 
       await this.client.subscribe("ttlock/+/set");
       await this.client.subscribe("ttlock/+/api");
@@ -91,6 +92,22 @@ class HomeAssistant {
   _onMQTTReconnect() {
     this.reconnectAttempts++;
     console.log(`MQTT reconnecting... (attempt ${this.reconnectAttempts})`);
+  }
+
+  /**
+   * Handle MQTT connect/reconnect success
+   */
+  async _onMQTTConnect() {
+    console.log("MQTT connected/reconnected");
+    this.connected = true;
+    this.reconnectAttempts = 0;
+    // Re-subscribe after reconnection
+    try {
+      await this.client.subscribe("ttlock/+/set");
+      await this.client.subscribe("ttlock/+/api");
+    } catch (e) {
+      console.error("MQTT: Failed to resubscribe:", e.message);
+    }
   }
 
   /**
