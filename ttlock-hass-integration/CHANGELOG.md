@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.3] - 2026-01-01
+- **Fix BLE Connection**: Wait if connection already in progress instead of failing
+- **Fix MQTT Reconnection**: Restore connected state and resubscribe after reconnection
+- Prevent concurrent connection attempts causing errors
+
 ## [0.5.2] - 2026-01-01
 - **Graceful Shutdown**: Handle SIGTERM/SIGINT for clean addon restart/update
 - **Fix UI Lock Visibility**: Lock appears in UI even if initial connection fails
