@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1] - 2026-01-01
+- **MQTT API**: New API topic (`ttlock/{id}/api`) for remote management of passcodes, cards, and fingerprints
+  - Passcode operations: `getPasscodes`, `addPasscode`, `updatePasscode`, `deletePasscode`
+  - IC Card operations: `getCards`, `addCard` (supports remote card registration with cardNumber), `deleteCard`
+  - Fingerprint operations: `getFingerprints`, `deleteFingerprint`
+  - Lock operations: `lock`, `unlock`, `getOperationLog`, `setAutoLock`
+- **Remote Card Registration**: Add NFC/IC cards by card number without physical scan (cardNumber parameter)
+- **API Responses**: Responses published to `ttlock/{id}/response` with requestId for correlation
+
 ## [0.5.0] - 2026-01-01
 - **BLE Connection Management**: Auto disconnect after each operation to prevent connection leaks
 - **State Verification**: Check lock state before lock/unlock to avoid redundant operations

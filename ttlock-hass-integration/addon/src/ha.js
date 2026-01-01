@@ -56,6 +56,7 @@ class HomeAssistant {
       this.client.on("close", this._onMQTTClose.bind(this));
 
       await this.client.subscribe("ttlock/+/set");
+      await this.client.subscribe("ttlock/+/api");
       this.connected = true;
       this.reconnectAttempts = 0;
       console.log("MQTT connected to", this.mqttUrl);
@@ -333,9 +334,232 @@ class HomeAssistant {
           console.error("MQTT: Error code:", error.code);
         }
       }
+    } else if (topicArr.length == 3 && topicArr[0] == "ttlock" && topicArr[2] == "api" && topicArr[1].length == 12) {
+      // API commands for passcodes, cards, fingerprints
+      await this._onMQTTApiMessage(topicArr[1], message.toString('utf8'));
     } else if (process.env.MQTT_DEBUG == "1") {
       console.log("Topic:", topic);
       console.log("Message:", message.toString('utf8'));
+    }
+  }
+
+  /**
+   * Convert lock ID to MAC address
+   * @param {string} lockId - Lock ID (12 hex chars without colons)
+   * @returns {string} MAC address with colons
+   */
+  _lockIdToAddress(lockId) {
+    let address = "";
+    for (let i = 0; i < lockId.length; i++) {
+      address += lockId[i];
+      if (i < lockId.length - 1 && i % 2 == 1) {
+        address += ":";
+      }
+    }
+    return address.toUpperCase();
+  }
+
+  /**
+   * Publish API response
+   * @param {string} lockId - Lock ID
+   * @param {string} requestId - Request ID for correlation
+   * @param {boolean} success - Whether the operation was successful
+   * @param {*} data - Response data
+   * @param {string} error - Error message if failed
+   */
+  async _publishApiResponse(lockId, requestId, success, data = null, error = null) {
+    if (!this.connected) return;
+
+    const responseTopic = `ttlock/${lockId}/response`;
+    const response = {
+      requestId,
+      success,
+      timestamp: new Date().toISOString()
+    };
+
+    if (success && data !== null) {
+      response.data = data;
+    }
+    if (!success && error) {
+      response.error = error;
+    }
+
+    try {
+      await this.client.publish(responseTopic, JSON.stringify(response), { retain: false });
+      if (process.env.MQTT_DEBUG == "1") {
+        console.log("MQTT API Response:", responseTopic, JSON.stringify(response));
+      }
+    } catch (err) {
+      console.error("MQTT: Failed to publish API response:", err.message);
+    }
+  }
+
+  /**
+   * Handle API messages for passcodes, cards, fingerprints
+   * @param {string} lockId - Lock ID (12 hex chars)
+   * @param {string} messageStr - JSON message string
+   */
+  async _onMQTTApiMessage(lockId, messageStr) {
+    const address = this._lockIdToAddress(lockId);
+    let request;
+
+    try {
+      request = JSON.parse(messageStr);
+    } catch (e) {
+      console.error("MQTT API: Invalid JSON:", messageStr);
+      await this._publishApiResponse(lockId, null, false, null, "Invalid JSON");
+      return;
+    }
+
+    const { type, requestId } = request;
+    if (!type) {
+      await this._publishApiResponse(lockId, requestId, false, null, "Missing 'type' field");
+      return;
+    }
+
+    console.log(`MQTT API: ${type} for ${address}`, requestId ? `(${requestId})` : "");
+
+    try {
+      let result;
+
+      switch (type) {
+        // ===== PASSCODE OPERATIONS =====
+        case "getPasscodes":
+          result = await manager.getPasscodes(address);
+          break;
+
+        case "addPasscode": {
+          // passcodeType: 1=permanent, 2=limited uses, 3=timed period, 4=cyclic
+          // For timed passcodes (type 3), startDate and endDate are required
+          const { passcode, startDate, endDate, passcodeType, name } = request;
+          if (!passcode) {
+            throw new Error("Missing required field: passcode");
+          }
+          const pType = passcodeType || 3; // Default to timed period
+          if (pType === 3 && (!startDate || !endDate)) {
+            throw new Error("Missing required fields for timed passcode: startDate, endDate");
+          }
+          result = await manager.addPasscode(
+            address,
+            pType,
+            passcode,
+            startDate ? new Date(startDate) : undefined,
+            endDate ? new Date(endDate) : undefined
+          );
+          break;
+        }
+
+        case "updatePasscode": {
+          // oldPasscode is required to identify which passcode to update
+          const { oldPasscode, newPasscode, startDate, endDate, passcodeType } = request;
+          if (!oldPasscode) {
+            throw new Error("Missing required field: oldPasscode");
+          }
+          const pType = passcodeType || 3;
+          result = await manager.updatePasscode(
+            address,
+            pType,
+            oldPasscode,
+            newPasscode || oldPasscode,
+            startDate ? new Date(startDate) : undefined,
+            endDate ? new Date(endDate) : undefined
+          );
+          break;
+        }
+
+        case "deletePasscode": {
+          const { passcode, passcodeType } = request;
+          if (!passcode) {
+            throw new Error("Missing required field: passcode");
+          }
+          const pType = passcodeType || 3;
+          result = await manager.deletePasscode(address, pType, passcode);
+          break;
+        }
+
+        // ===== IC CARD OPERATIONS =====
+        case "getCards":
+          result = await manager.getCards(address);
+          break;
+
+        case "addCard": {
+          const { cardNumber, startDate, endDate, name } = request;
+          if (!startDate || !endDate) {
+            throw new Error("Missing required fields: startDate, endDate");
+          }
+          // cardNumber is optional - if not provided, card must be scanned physically
+          result = await manager.addCard(
+            address,
+            new Date(startDate),
+            new Date(endDate),
+            cardNumber || undefined,
+            name || undefined
+          );
+          break;
+        }
+
+        case "deleteCard": {
+          const { cardId } = request;
+          if (!cardId) {
+            throw new Error("Missing required field: cardId");
+          }
+          result = await manager.deleteCard(address, cardId);
+          break;
+        }
+
+        // ===== FINGERPRINT OPERATIONS =====
+        case "getFingerprints":
+          result = await manager.getFingers(address);
+          break;
+
+        case "deleteFingerprint": {
+          const { fingerprintId } = request;
+          if (!fingerprintId) {
+            throw new Error("Missing required field: fingerprintId");
+          }
+          result = await manager.deleteFinger(address, fingerprintId);
+          break;
+        }
+
+        // ===== LOCK OPERATIONS =====
+        case "lock":
+          await manager.lockLock(address);
+          result = { state: "locked" };
+          break;
+
+        case "unlock":
+          await manager.unlockLock(address);
+          result = { state: "unlocked" };
+          break;
+
+        case "getOperationLog": {
+          const { logType } = request;
+          result = await manager.getOperationLog(address, logType);
+          break;
+        }
+
+        case "setAutoLock": {
+          const { seconds } = request;
+          if (seconds === undefined) {
+            throw new Error("Missing required field: seconds");
+          }
+          result = await manager.setAutoLock(address, seconds);
+          break;
+        }
+
+        default:
+          throw new Error(`Unknown API command: ${type}`);
+      }
+
+      await this._publishApiResponse(lockId, requestId, true, result);
+      console.log(`MQTT API: ${type} successful for ${address}`);
+
+    } catch (error) {
+      console.error(`MQTT API: ${type} failed for ${address}:`, error.message);
+      const errorMessage = error instanceof TTLockError 
+        ? `${error.message} (code: ${error.code})`
+        : error.message;
+      await this._publishApiResponse(lockId, requestId, false, null, errorMessage);
     }
   }
 }

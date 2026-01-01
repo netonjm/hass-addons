@@ -476,9 +476,14 @@ class Manager extends EventEmitter {
 
   /**
    * Add a card to a lock
+   * @param {string} address - Lock address
+   * @param {Date} startDate - Start date for card validity
+   * @param {Date} endDate - End date for card validity
+   * @param {string} [cardNumber] - Optional card number (hex string). If provided, card is added remotely without physical scan
+   * @param {string} [alias] - Optional alias for the card
    * @throws {TTLockError} If lock not found, not supported, connection fails, or operation fails
    */
-  async addCard(address, startDate, endDate, alias) {
+  async addCard(address, startDate, endDate, cardNumber, alias) {
     const lock = this.pairedLocks.get(address);
     if (!lock) {
       throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
@@ -489,7 +494,10 @@ class Manager extends EventEmitter {
     
     return await executeWithConnection(lock, async () => {
       try {
-        const card = await lock.addICCard(startDate, endDate);
+        // If cardNumber is provided, add card remotely without physical scan
+        const card = cardNumber 
+          ? await lock.addICCard(startDate, endDate, cardNumber)
+          : await lock.addICCard(startDate, endDate);
         if (!card) {
           throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to add card to ${address}`);
         }

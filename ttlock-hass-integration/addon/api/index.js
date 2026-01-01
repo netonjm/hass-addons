@@ -144,7 +144,7 @@ module.exports = async (server) => {
               const card = msg.data.card;
               try {
                 if (card.cardNumber == -1) { // add new card
-                  await manager.addCard(msg.data.address, card.startDate, card.endDate, card.alias);
+                  await manager.addCard(msg.data.address, card.startDate, card.endDate, undefined, card.alias);
                 } else if (card.startDate == -1) { // delete
                   await manager.deleteCard(msg.data.address, card.cardNumber);
                 } else { // update
