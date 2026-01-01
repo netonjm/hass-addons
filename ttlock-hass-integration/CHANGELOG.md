@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.2] - 2026-01-01
+- **Graceful Shutdown**: Handle SIGTERM/SIGINT for clean addon restart/update
+- **Fix UI Lock Visibility**: Lock appears in UI even if initial connection fails
+- Close BLE, MQTT, and HTTP connections properly on shutdown
+
 ## [0.5.1] - 2026-01-01
 - **MQTT API**: New API topic (`ttlock/{id}/api`) for remote management of passcodes, cards, and fingerprints
   - Passcode operations: `getPasscodes`, `addPasscode`, `updatePasscode`, `deletePasscode`
