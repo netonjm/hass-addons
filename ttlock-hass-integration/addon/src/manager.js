@@ -55,6 +55,28 @@ async function retryOperation(operation, maxRetries = RETRY_CONFIG.operationRetr
   }
   throw lastError;
 }
+
+/**
+ * Execute an operation with automatic connection management
+ * Connects before the operation and disconnects after (success or failure)
+ * @param {import('ttlock-sdk-js').TTLock} lock - The lock to operate on
+ * @param {Function} operation - Async function that performs the operation
+ * @param {Function} connectFn - Function to establish connection
+ * @returns {Promise<any>} Result of the operation
+ */
+async function executeWithConnection(lock, operation, connectFn) {
+  await connectFn(lock);
+  try {
+    return await operation();
+  } finally {
+    try {
+      await lock.disconnect();
+    } catch (e) {
+      console.warn(`Failed to disconnect from ${lock.getAddress()}: ${e.message}`);
+    }
+  }
+}
+
 /**
  * Events:
  * - lockListChanged - when a lock was found during scanning
@@ -249,6 +271,13 @@ class Manager extends EventEmitter {
         if (error instanceof TTLockError) throw error;
         console.error(error);
         throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Unlock failed: ${error.message}`, { address, originalError: error.message });
+      } finally {
+        // Always disconnect to free BLE resources
+        try {
+          await lock.disconnect();
+        } catch (e) {
+          console.warn(`Failed to disconnect after unlock: ${e.message}`);
+        }
       }
     }, RETRY_CONFIG.operationRetries, RETRY_CONFIG.retryDelay, `unlock ${address}`);
   }
@@ -285,6 +314,13 @@ class Manager extends EventEmitter {
         if (error instanceof TTLockError) throw error;
         console.error(error);
         throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Lock failed: ${error.message}`, { address, originalError: error.message });
+      } finally {
+        // Always disconnect to free BLE resources
+        try {
+          await lock.disconnect();
+        } catch (e) {
+          console.warn(`Failed to disconnect after lock: ${e.message}`);
+        }
       }
     }, RETRY_CONFIG.operationRetries, RETRY_CONFIG.retryDelay, `lock ${address}`);
   }
@@ -301,20 +337,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.setAutoLockTime(value);
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Failed to set auto-lock for ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const res = await lock.setAutoLockTime(value);
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Failed to set auto-lock for ${address}`);
+        }
+        this.emit("lockUpdated", lock);
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Set auto-lock failed: ${error.message}`, { address, originalError: error.message });
       }
-      this.emit("lockUpdated", lock);
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Set auto-lock failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   async getCredentials(address) {
@@ -341,19 +377,19 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.addPassCode(type, passCode, startDate, endDate);
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to add passcode to ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const res = await lock.addPassCode(type, passCode, startDate, endDate);
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to add passcode to ${address}`);
+        }
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Add passcode failed: ${error.message}`, { address, originalError: error.message });
       }
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Add passcode failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -369,19 +405,19 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.updatePassCode(type, oldPasscode, newPasscode, startDate, endDate);
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to update passcode on ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const res = await lock.updatePassCode(type, oldPasscode, newPasscode, startDate, endDate);
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to update passcode on ${address}`);
+        }
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Update passcode failed: ${error.message}`, { address, originalError: error.message });
       }
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Update passcode failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -397,20 +433,21 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.deletePassCode(type, passCode);
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to delete passcode from ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const res = await lock.deletePassCode(type, passCode);
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Failed to delete passcode from ${address}`);
+        }
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Delete passcode failed: ${error.message}`, { address, originalError: error.message });
       }
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Delete passcode failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
+
 
   /**
    * Get all passcodes from a lock
@@ -425,16 +462,16 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support passcodes`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const passcodes = await lock.getPassCodes();
-      return passcodes;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Get passcodes failed: ${error.message}`, { address, originalError: error.message });
-    }
+    return await executeWithConnection(lock, async () => {
+      try {
+        const passcodes = await lock.getPassCodes();
+        return passcodes;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.PASSCODE_FAILED, `Get passcodes failed: ${error.message}`, { address, originalError: error.message });
+      }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -450,20 +487,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const card = await lock.addICCard(startDate, endDate);
-      if (!card) {
-        throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to add card to ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const card = await lock.addICCard(startDate, endDate);
+        if (!card) {
+          throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to add card to ${address}`);
+        }
+        store.setCardAlias(card, alias);
+        return card;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Add card failed: ${error.message}`, { address, originalError: error.message });
       }
-      store.setCardAlias(card, alias);
-      return card;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.CARD_FAILED, `Add card failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -479,20 +516,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const result = await lock.updateICCard(card, startDate, endDate);
-      if (result === false) {
-        throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to update card on ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const result = await lock.updateICCard(card, startDate, endDate);
+        if (result === false) {
+          throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to update card on ${address}`);
+        }
+        store.setCardAlias(card, alias);
+        return result;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Update card failed: ${error.message}`, { address, originalError: error.message });
       }
-      store.setCardAlias(card, alias);
-      return result;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.CARD_FAILED, `Update card failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -508,20 +545,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const result = await lock.deleteICCard(card);
-      if (result === false) {
-        throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to delete card from ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const result = await lock.deleteICCard(card);
+        if (result === false) {
+          throw new TTLockError(ErrorCodes.CARD_FAILED, `Failed to delete card from ${address}`);
+        }
+        store.deleteCardAlias(card);
+        return result;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Delete card failed: ${error.message}`, { address, originalError: error.message });
       }
-      store.deleteCardAlias(card);
-      return result;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.CARD_FAILED, `Delete card failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -537,21 +574,21 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support IC cards`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      let cards = await lock.getICCards();
-      if (cards.length > 0) {
-        for (let card of cards) {
-          card.alias = store.getCardAlias(card.cardNumber);
+    return await executeWithConnection(lock, async () => {
+      try {
+        let cards = await lock.getICCards();
+        if (cards.length > 0) {
+          for (let card of cards) {
+            card.alias = store.getCardAlias(card.cardNumber);
+          }
         }
+        return cards;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.CARD_FAILED, `Get cards failed: ${error.message}`, { address, originalError: error.message });
       }
-      return cards;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.CARD_FAILED, `Get cards failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -567,20 +604,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const finger = await lock.addFingerprint(startDate, endDate);
-      if (!finger) {
-        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to add fingerprint to ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const finger = await lock.addFingerprint(startDate, endDate);
+        if (!finger) {
+          throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to add fingerprint to ${address}`);
+        }
+        store.setFingerAlias(finger, alias);
+        return finger;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Add fingerprint failed: ${error.message}`, { address, originalError: error.message });
       }
-      store.setFingerAlias(finger, alias);
-      return finger;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Add fingerprint failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -596,20 +633,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const result = await lock.updateFingerprint(finger, startDate, endDate);
-      if (result === false) {
-        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to update fingerprint on ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const result = await lock.updateFingerprint(finger, startDate, endDate);
+        if (result === false) {
+          throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to update fingerprint on ${address}`);
+        }
+        store.setFingerAlias(finger, alias);
+        return result;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Update fingerprint failed: ${error.message}`, { address, originalError: error.message });
       }
-      store.setFingerAlias(finger, alias);
-      return result;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Update fingerprint failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -625,20 +662,20 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const result = await lock.deleteFingerprint(finger);
-      if (result === false) {
-        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to delete fingerprint from ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const result = await lock.deleteFingerprint(finger);
+        if (result === false) {
+          throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Failed to delete fingerprint from ${address}`);
+        }
+        store.deleteFingerAlias(finger);
+        return result;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Delete fingerprint failed: ${error.message}`, { address, originalError: error.message });
       }
-      store.deleteFingerAlias(finger);
-      return result;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Delete fingerprint failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -654,21 +691,21 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support fingerprints`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      let fingers = await lock.getFingerprints();
-      if (fingers.length > 0) {
-        for (let finger of fingers) {
-          finger.alias = store.getFingerAlias(finger.fpNumber);
+    return await executeWithConnection(lock, async () => {
+      try {
+        let fingers = await lock.getFingerprints();
+        if (fingers.length > 0) {
+          for (let finger of fingers) {
+            finger.alias = store.getFingerAlias(finger.fpNumber);
+          }
         }
+        return fingers;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Get fingerprints failed: ${error.message}`, { address, originalError: error.message });
       }
-      return fingers;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.FINGERPRINT_FAILED, `Get fingerprints failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -684,21 +721,21 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.OPERATION_NOT_SUPPORTED, `Lock ${address} does not support audio settings`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const sound = audio == true ? AudioManage.TURN_ON : AudioManage.TURN_OFF;
-      const res = await lock.setLockSound(sound);
-      if (res === false) {
-        throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Failed to set audio for ${address}`);
+    return await executeWithConnection(lock, async () => {
+      try {
+        const sound = audio == true ? AudioManage.TURN_ON : AudioManage.TURN_OFF;
+        const res = await lock.setLockSound(sound);
+        if (res === false) {
+          throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Failed to set audio for ${address}`);
+        }
+        this.emit("lockUpdated", lock);
+        return res;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Set audio failed: ${error.message}`, { address, originalError: error.message });
       }
-      this.emit("lockUpdated", lock);
-      return res;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.SETTINGS_FAILED, `Set audio failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -715,39 +752,39 @@ class Manager extends EventEmitter {
       reload = false;
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      let operations = JSON.parse(JSON.stringify(await lock.getOperationLog(true, reload)));
-      let validOperations = [];
-      for (let operation of operations) {
-        if (operation) {
-          operation.recordTypeName = LogOperateNames[operation.recordType];
-          if (LogOperateCategory.LOCK.includes(operation.recordType)) {
-            operation.recordTypeCategory = "LOCK";
-          } else if (LogOperateCategory.UNLOCK.includes(operation.recordType)) {
-            operation.recordTypeCategory = "UNLOCK";
-          } else if (LogOperateCategory.FAILED.includes(operation.recordType)) {
-            operation.recordTypeCategory = "FAILED";
-          } else {
-            operation.recordTypeCategory = "OTHER";
-          }
-          if (typeof operation.password != "undefined") {
-            if (LogOperateCategory.IC.includes(operation.recordType)) {
-              operation.passwordName = store.getCardAlias(operation.password);
-            } else if (LogOperateCategory.FR.includes(operation.recordType)) {
-              operation.passwordName = store.getFingerAlias(operation.password);
+    return await executeWithConnection(lock, async () => {
+      try {
+        let operations = JSON.parse(JSON.stringify(await lock.getOperationLog(true, reload)));
+        let validOperations = [];
+        for (let operation of operations) {
+          if (operation) {
+            operation.recordTypeName = LogOperateNames[operation.recordType];
+            if (LogOperateCategory.LOCK.includes(operation.recordType)) {
+              operation.recordTypeCategory = "LOCK";
+            } else if (LogOperateCategory.UNLOCK.includes(operation.recordType)) {
+              operation.recordTypeCategory = "UNLOCK";
+            } else if (LogOperateCategory.FAILED.includes(operation.recordType)) {
+              operation.recordTypeCategory = "FAILED";
+            } else {
+              operation.recordTypeCategory = "OTHER";
             }
+            if (typeof operation.password != "undefined") {
+              if (LogOperateCategory.IC.includes(operation.recordType)) {
+                operation.passwordName = store.getCardAlias(operation.password);
+              } else if (LogOperateCategory.FR.includes(operation.recordType)) {
+                operation.passwordName = store.getFingerAlias(operation.password);
+              }
+            }
+            validOperations.push(operation);
           }
-          validOperations.push(operation);
         }
+        return validOperations;
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Get operation log failed: ${error.message}`, { address, originalError: error.message });
       }
-      return validOperations;
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Get operation log failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**
@@ -760,22 +797,22 @@ class Manager extends EventEmitter {
       throw new TTLockError(ErrorCodes.LOCK_NOT_FOUND, `Paired lock ${address} not found`);
     }
     
-    await this._connectLock(lock);
-    
-    try {
-      const res = await lock.resetLock();
-      if (res) {
-        lock.removeAllListeners();
-        this.pairedLocks.delete(address);
-        this.emit("lockListChanged");
-        return res;
+    return await executeWithConnection(lock, async () => {
+      try {
+        const res = await lock.resetLock();
+        if (res) {
+          lock.removeAllListeners();
+          this.pairedLocks.delete(address);
+          this.emit("lockListChanged");
+          return res;
+        }
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to reset lock ${address}`);
+      } catch (error) {
+        if (error instanceof TTLockError) throw error;
+        console.error(error);
+        throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Reset lock failed: ${error.message}`, { address, originalError: error.message });
       }
-      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Failed to reset lock ${address}`);
-    } catch (error) {
-      if (error instanceof TTLockError) throw error;
-      console.error(error);
-      throw new TTLockError(ErrorCodes.OPERATION_FAILED, `Reset lock failed: ${error.message}`, { address, originalError: error.message });
-    }
+    }, (l) => this._connectLock(l));
   }
 
   /**

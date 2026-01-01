@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0] - 2026-01-01
+- **BLE Connection Management**: Auto disconnect after each operation to prevent connection leaks
+- **State Verification**: Check lock state before lock/unlock to avoid redundant operations
+- **Retry Logic**: Automatic retries with configurable backoff for BLE connections and operations
+- **Error Handling**: New typed error system (TTLockError, ErrorCodes) for better debugging
+- **Stability Fix**: Resolve issue where system hangs after multiple lock/unlock operations
+- Add `executeWithConnection` helper for consistent connection handling across all operations
+
 ## [0.4.13] - 2021-05-06
 - New build
 
