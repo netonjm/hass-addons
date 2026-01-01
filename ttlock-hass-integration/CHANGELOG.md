@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.5] - 2026-01-02
+- **BLE Timing Fixes**: Add timing delays based on Android SDK protocol analysis
+  - Add 500ms post-connection delay for BLE stabilization
+  - Increase response wait loop from 5ms to 50ms with 10s timeout protection
+  - Add 20ms delay between MTU fragments
+  - Add 100ms post-write delay (Android SDK uses 2500-5500ms)
+  - Increase retry delay from 200ms to 500ms
+- **Connection State Reset**: Reset `waitingForResponse`, `responses`, and `incomingDataBuffer` on disconnect to prevent "Command already in progress" errors
+- **Local SDK Fork**: Use patched local fork of ttlock-sdk-js instead of npm package
+- **Documentation**: Add protocol study (TTLOCK_PROTOCOL_STUDY.md) and proposed fixes (PROPOSED_FIXES.md)
+
 ## [0.5.3] - 2026-01-01
 - **Fix BLE Connection**: Wait if connection already in progress instead of failing
 - **Fix MQTT Reconnection**: Restore connected state and resubscribe after reconnection
