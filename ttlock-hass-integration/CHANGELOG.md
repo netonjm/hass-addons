@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.6.3] - 2026-01-02
+- **Build Fix**: Explicit tsconfig.json options for Docker build compatibility
+  - Remove `extends` dependency on `@tsconfig/node12`
+  - Add `esModuleInterop`, `allowSyntheticDefaultImports`, `skipLibCheck`
+
 ## [0.6.2] - 2026-01-02
 - **Audio Control**: Add mute/unmute/getsound commands to test script
 - **Feature Detection**: Dynamic featureList loading when not cached
