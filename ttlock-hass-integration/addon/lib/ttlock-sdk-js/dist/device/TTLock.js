@@ -14,6 +14,8 @@ class TTLock extends TTLockApi_1.TTLockApi {
         this.skipDataRead = false;
         this.connecting = false;
         this.connected = false;
+        this.pendingAutoLock = null; // Promise that resolves when auto-lock notification arrives
+        this.pendingAutoLockResolver = null; // Resolver for the pending auto-lock promise
         this.device.on("connected", this.onConnected.bind(this));
         this.device.on("disconnected", this.onDisconnected.bind(this));
         this.device.on("updated", this.onTTDeviceUpdated.bind(this));
@@ -40,38 +42,86 @@ class TTLock extends TTLockApi_1.TTLockApi {
     getRssi() {
         return this.rssi;
     }
-    async connect(skipDataRead = false, timeout = 15) {
+    async connect(options = {}) {
+        // Support both old signature (skipDataRead, timeout) and new options object
+        let skipDataRead = false;
+        let timeout = 15;
+        let maxRetries = 3;
+        let retryDelay = 1000;
+        
+        if (typeof options === 'boolean') {
+            // Old signature: connect(skipDataRead, timeout)
+            skipDataRead = options;
+            timeout = arguments[1] || 15;
+        } else if (typeof options === 'object') {
+            skipDataRead = options.skipBasicInfo || options.skipDataRead || false;
+            timeout = options.timeout || 15;
+            maxRetries = options.maxRetries || 3;
+            retryDelay = options.retryDelay || 1000;
+        }
+        
         if (this.connecting) {
-            console.log("Connect allready in progress");
+            console.log("Connect already in progress");
             return false;
         }
         if (this.connected) {
             return true;
         }
-        this.connecting = true;
-        this.skipDataRead = skipDataRead;
-        const connected = await this.device.connect();
-        let timeoutCycles = timeout * 10;
-        if (connected) {
-            console.log("Lock waiting for connection to be completed");
-            do {
-                await (0, timingUtil_1.sleep)(100);
-                timeoutCycles--;
-            } while (!this.connected && timeoutCycles > 0 && this.connecting);
+        
+        // Retry loop
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            this.connecting = true;
+            this.skipDataRead = skipDataRead;
+            
+            try {
+                const connected = await this.device.connect(skipDataRead);
+                let timeoutCycles = timeout * 10;
+                
+                if (connected) {
+                    console.log("Lock waiting for connection to be completed");
+                    do {
+                        await (0, timingUtil_1.sleep)(100);
+                        timeoutCycles--;
+                    } while (!this.connected && timeoutCycles > 0 && this.connecting);
+                    
+                    if (this.connected) {
+                        this.skipDataRead = false;
+                        this.connecting = false;
+                        return true;
+                    }
+                }
+                
+                console.log(`Lock connect attempt ${attempt}/${maxRetries} failed`);
+                
+            } catch (err) {
+                console.log(`Lock connect attempt ${attempt}/${maxRetries} error: ${err.message}`);
+            }
+            
+            this.skipDataRead = false;
+            this.connecting = false;
+            
+            // Wait before retry (except on last attempt)
+            if (attempt < maxRetries) {
+                await (0, timingUtil_1.sleep)(retryDelay);
+            }
         }
-        else {
-            console.log("Lock connect failed");
-        }
-        this.skipDataRead = false;
-        this.connecting = false;
-        // it is possible that even tho device initially connected, reading initial data will disconnect
-        return this.connected;
+        
+        console.log("Lock connect failed after all retries");
+        return false;
     }
     isConnected() {
         return this.connected;
     }
     async disconnect() {
+        // Clear any pending auto-lock
+        if (this.pendingAutoLockResolver) {
+            this.pendingAutoLockResolver();
+            this.pendingAutoLockResolver = null;
+            this.pendingAutoLock = null;
+        }
         await this.device.disconnect();
+        // Small pause after disconnect to let the lock stabilize
+        await (0, timingUtil_1.sleep)(500);
     }
     isInitialized() {
         return this.initialized;
@@ -267,6 +317,16 @@ class TTLock extends TTLockApi_1.TTLockApi {
         return true;
     }
     /**
+     * Wait for pending auto-lock notification if there is one
+     */
+    async waitForPendingAutoLock() {
+        if (this.pendingAutoLock) {
+            console.log("[AutoLock] Waiting for pending auto-lock notification...");
+            await this.pendingAutoLock;
+            console.log("[AutoLock] Pending auto-lock cleared");
+        }
+    }
+    /**
      * Lock the lock
      */
     async lock() {
@@ -277,12 +337,22 @@ class TTLock extends TTLockApi_1.TTLockApi {
             throw new Error("Lock is in pairing mode");
         }
         try {
+            // Wait for any pending auto-lock notification
+            await this.waitForPendingAutoLock();
+            // Ensure minimum delay since last command
+            await this.device.ensureCommandDelay();
+            
             console.log("========= check user time");
             const psFromLock = await this.checkUserTime();
             console.log("========= check user time", psFromLock);
             console.log("========= lock");
             const lockData = await this.lockCommand(psFromLock);
             console.log("========= lock", lockData);
+            
+            // Wait for SearchBicycleStatusCommand as confirmation (expected status = 0 = locked)
+            const confirmedStatus = await this.waitForStatusConfirmation(0, 3000);
+            console.log("========= lock confirmed, status:", confirmedStatus);
+            
             this.lockedStatus = LockedStatus_1.LockedStatus.LOCKED;
             this.emit("locked", this);
         }
@@ -303,20 +373,38 @@ class TTLock extends TTLockApi_1.TTLockApi {
             throw new Error("Lock is in pairing mode");
         }
         try {
+            // Wait for any pending auto-lock notification
+            await this.waitForPendingAutoLock();
+            // Ensure minimum delay since last command
+            await this.device.ensureCommandDelay();
+            
             console.log("========= check user time");
             const psFromLock = await this.checkUserTime();
             console.log("========= check user time", psFromLock);
             console.log("========= unlock");
             const unlockData = await this.unlockCommand(psFromLock);
             console.log("========= unlock", unlockData);
+            
+            // Note: The lock does NOT send a SearchBicycleStatusCommand confirmation after unlock
+            // It only sends confirmation after lock. The unlock command response itself is the confirmation.
+            
             this.lockedStatus = LockedStatus_1.LockedStatus.UNLOCKED;
             this.emit("unlocked", this);
-            // if autolock is on, then emit locked event after the timeout has passed
+            // if autolock is on, set up pending auto-lock promise
             if (this.autoLockTime > 0) {
-                setTimeout(() => {
-                    this.lockedStatus = LockedStatus_1.LockedStatus.LOCKED;
-                    this.emit("locked", this);
-                }, this.autoLockTime * 1000);
+                console.log(`[AutoLock] Auto-lock is active (${this.autoLockTime}s), setting up pending lock...`);
+                this.pendingAutoLock = new Promise((resolve) => {
+                    this.pendingAutoLockResolver = resolve;
+                    // Timeout after autoLockTime + 2s margin
+                    setTimeout(() => {
+                        if (this.pendingAutoLockResolver) {
+                            console.log("[AutoLock] Timeout waiting for auto-lock notification");
+                            this.pendingAutoLockResolver = null;
+                            this.pendingAutoLock = null;
+                            resolve();
+                        }
+                    }, (this.autoLockTime + 2) * 1000);
+                });
             }
         }
         catch (error) {
@@ -362,21 +450,22 @@ class TTLock extends TTLockApi_1.TTLockApi {
         }
         const oldAutoLockTime = this.autoLockTime;
         if (noCache || this.autoLockTime == -1) {
-            if (typeof this.featureList != "undefined") {
-                if (this.featureList.has(FeatureValue_1.FeatureValue.AUTO_LOCK)) {
-                    if (!this.isConnected()) {
-                        throw new Error("Lock is not connected");
+            // Check if lock supports auto-lock: either via featureList or if autoLockTime was previously set
+            const hasAutoLockFeature = (typeof this.featureList != "undefined" && this.featureList.has(FeatureValue_1.FeatureValue.AUTO_LOCK))
+                || (oldAutoLockTime >= 0);
+            if (hasAutoLockFeature) {
+                if (!this.isConnected()) {
+                    throw new Error("Lock is not connected");
+                }
+                try {
+                    if (await this.macro_adminLogin()) {
+                        console.log("========= autoLockTime");
+                        this.autoLockTime = await this.searchAutoLockTimeCommand();
+                        console.log("========= autoLockTime:", this.autoLockTime);
                     }
-                    try {
-                        if (await this.macro_adminLogin()) {
-                            console.log("========= autoLockTime");
-                            this.autoLockTime = await this.searchAutoLockTimeCommand();
-                            console.log("========= autoLockTime:", this.autoLockTime);
-                        }
-                    }
-                    catch (error) {
-                        console.error(error);
-                    }
+                }
+                catch (error) {
+                    console.error(error);
                 }
             }
         }
@@ -393,21 +482,22 @@ class TTLock extends TTLockApi_1.TTLockApi {
             throw new Error("Lock is in pairing mode");
         }
         if (this.autoLockTime != autoLockTime) {
-            if (typeof this.featureList != "undefined") {
-                if (this.featureList.has(FeatureValue_1.FeatureValue.AUTO_LOCK)) {
-                    try {
-                        if (await this.macro_adminLogin()) {
-                            console.log("========= autoLockTime");
-                            await this.searchAutoLockTimeCommand(autoLockTime);
-                            console.log("========= autoLockTime");
-                            this.autoLockTime = autoLockTime;
-                            this.emit("dataUpdated", this);
-                            return true;
-                        }
+            // Check if lock supports auto-lock: either via featureList or if autoLockTime was previously set
+            const hasAutoLockFeature = (typeof this.featureList != "undefined" && this.featureList.has(FeatureValue_1.FeatureValue.AUTO_LOCK))
+                || (this.autoLockTime != -1);
+            if (hasAutoLockFeature) {
+                try {
+                    if (await this.macro_adminLogin()) {
+                        console.log("========= autoLockTime");
+                        await this.searchAutoLockTimeCommand(autoLockTime);
+                        console.log("========= autoLockTime");
+                        this.autoLockTime = autoLockTime;
+                        this.emit("dataUpdated", this);
+                        return true;
                     }
-                    catch (error) {
-                        console.error(error);
-                    }
+                }
+                catch (error) {
+                    console.error(error);
                 }
             }
         }
@@ -1212,20 +1302,68 @@ class TTLock extends TTLockApi_1.TTLockApi {
     }
     onDataReceived(command) {
         // is this just a notification (like the lock was locked/unlocked etc.)
+        if (process.env.TTLOCK_DEBUG) {
+            console.log("[onDataReceived] Command received, crcok:", command.crcok, "type:", command.commandType);
+        }
         if (this.privateData.aesKey) {
             command.setAesKey(this.privateData.aesKey);
-            const data = command.getCommand().getRawData();
-            console.log("Received:", command);
-            if (data) {
-                console.log("Data", data.toString("hex"));
+            const cmd = command.getCommand();
+            const data = cmd.getRawData();
+            if (process.env.TTLOCK_DEBUG) {
+                console.log("Received:", command);
+                if (data) {
+                    console.log("Data", data.toString("hex"));
+                }
+            }
+            // Check if this is a SearchBicycleStatusCommand (status confirmation)
+            // The command must have getLockStatus AND be a SearchBicycleStatusCommand (first byte = 0x14)
+            const isSearchBicycleStatus = data && data.length > 0 && data[0] === 0x14;
+            if (isSearchBicycleStatus && typeof cmd.getLockStatus === 'function') {
+                const lockStatus = cmd.getLockStatus();
+                console.log("[StatusConfirmation] Lock status confirmed:", lockStatus === 1 ? "UNLOCKED" : "LOCKED");
+                this.emit("statusConfirmation", lockStatus);
+                
+                // If we receive a LOCKED status and there's a pending auto-lock, resolve it
+                if (lockStatus === 0 && this.pendingAutoLockResolver) {
+                    console.log("[AutoLock] Auto-lock notification received, clearing pending lock");
+                    this.lockedStatus = LockedStatus_1.LockedStatus.LOCKED;
+                    this.emit("locked", this);
+                    this.pendingAutoLockResolver();
+                    this.pendingAutoLockResolver = null;
+                    this.pendingAutoLock = null;
+                }
             }
         }
         else {
             console.error("Unable to decrypt notification, no AES key");
         }
     }
+    /**
+     * Wait for status confirmation from the lock (SearchBicycleStatusCommand)
+     * @param expectedStatus Expected status (0=locked, 1=unlocked), or -1 for any
+     * @param timeout Timeout in ms
+     * @returns Promise that resolves with the status, or rejects on timeout
+     */
+    waitForStatusConfirmation(expectedStatus = -1, timeout = 3000) {
+        return new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+                this.removeListener("statusConfirmation", handler);
+                console.log("[StatusConfirmation] Timeout");
+                resolve(-1); // Resolve with -1 on timeout instead of rejecting
+            }, timeout);
+            
+            const handler = (status) => {
+                if (expectedStatus === -1 || status === expectedStatus) {
+                    clearTimeout(timeoutId);
+                    this.removeListener("statusConfirmation", handler);
+                    resolve(status);
+                }
+            };
+            
+            this.on("statusConfirmation", handler);
+        });
+    }
     async onConnected() {
-        console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.onConnected() called, isPaired=`, this.isPaired(), "skipDataRead=", this.skipDataRead);
         if (this.isPaired() && !this.skipDataRead) {
             // read general data
             console.log("Connected to known lock, reading general data");
@@ -1268,13 +1406,9 @@ class TTLock extends TTLockApi_1.TTLockApi {
             }
         }
         // are we still connected ? It is possible the lock will disconnect while reading general data
-        console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.onConnected() check device.connected=`, this.device.connected);
         if (this.device.connected) {
             this.connected = true;
-            console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.connected set to true, emitting connected`);
             this.emit("connected", this);
-        } else {
-            console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.onConnected() device disconnected during setup, not setting connected`);
         }
     }
     async onDisconnected() {

@@ -30,7 +30,9 @@ class UnlockCommand extends Command_1.Command {
         if (this.sum) {
             const data = Buffer.alloc(8);
             data.writeUInt32BE(this.sum, 0);
-            data.writeUInt32BE((0, moment_1.default)().unix(), 4);
+            const timestamp = (0, moment_1.default)().unix();
+            data.writeUInt32BE(timestamp, 4);
+            console.log("[DEBUG UnlockCommand.build] sum:", this.sum, "timestamp:", timestamp, "data:", data.toString('hex'));
             return data;
         }
         return Buffer.from([]);

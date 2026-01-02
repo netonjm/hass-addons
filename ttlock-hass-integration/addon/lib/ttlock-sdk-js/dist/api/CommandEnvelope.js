@@ -53,7 +53,11 @@ class CommandEnvelope {
         const crc = CodecUtils_1.CodecUtils.crccompute(rawData.slice(0, rawData.length - 1));
         command.crc = rawData.readUInt8(rawData.length - 1);
         if (command.crc != crc) {
-            console.log("Bad CRC should be " + crc + " and we got " + command.crc);
+            // Some lock firmware versions send notifications with incorrect CRC
+            // but the data is still valid. Log for debugging but don't fail.
+            if (process.env.TTLOCK_DEBUG) {
+                console.log("[CRC] Mismatch - expected:", crc, "got:", command.crc, "raw:", rawData.toString("hex"));
+            }
             command.crcok = false;
         }
         command.generateLockType();

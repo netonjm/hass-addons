@@ -14,6 +14,9 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         this.incomingDataBuffer = Buffer.from([]);
         this.waitingForResponse = false;
         this.responses = [];
+        this.commandQueue = Promise.resolve(); // Command queue for serialization
+        this.lastCommandTime = 0; // Timestamp of last command completion
+        this.minCommandInterval = 500; // Minimum ms between commands (increased for stability)
         this.scanner = scanner;
     }
     static createFromDevice(device, scanner) {
@@ -40,39 +43,40 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         }
         this.emit("updated");
     }
-    async connect() {
+    async connect(skipBasicInfo = false) {
         if (typeof this.device != "undefined" && this.device.connectable) {
             // stop scan
             await this.scanner.stopScan();
-            console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device connect() starting`);
             if (await this.device.connect()) {
-                // TODO: something happens here (disconnect) and it's stuck in limbo
-                console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device reading basic info`);
-                await this.readBasicInfo();
-                console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device read basic info`);
+                if (!skipBasicInfo) {
+                    console.log("BLE Device reading basic info");
+                    await this.readBasicInfo();
+                    console.log("BLE Device read basic info");
+                } else {
+                    console.log("BLE Device skipping basic info (fast mode)");
+                    // Still need to discover services to get the 1910 service
+                    console.log("BLE Device discover services start");
+                    await this.device.discoverServices();
+                    console.log("BLE Device discover services end");
+                }
                 const subscribed = await this.subscribe();
-                console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device subscribed`);
+                console.log("BLE Device subscribed");
                 if (!subscribed) {
                     await this.device.disconnect();
                     return false;
                 }
                 else {
-                    // Post-connection delay to stabilize (like Android SDK)
-                    console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device post-connection delay start`);
-                    await (0, timingUtil_1.sleep)(200);
-                    console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device post-connection delay end, setting connected=true`);
                     this.connected = true;
                     this.emit("connected");
-                    console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device emitted connected event`);
                     return true;
                 }
             }
             else {
-                console.log(`[${new Date().toISOString().substr(11, 12)}] Connect failed`);
+                console.log("Connect failed");
             }
         }
         else {
-            console.log(`[${new Date().toISOString().substr(11, 12)}] Missing device or not connectable`);
+            console.log("Missing device or not connectable");
         }
         return false;
     }
@@ -84,12 +88,7 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         // console.log("TTBluetoothDevice connected", this.device?.id);
     }
     async onDeviceDisconnected() {
-        console.log(`[${new Date().toISOString().substr(11, 12)}] TTBluetoothDevice.onDeviceDisconnected() called`);
         this.connected = false;
-        // Reset state to prevent "Command already in progress" errors
-        this.waitingForResponse = false;
-        this.responses = [];
-        this.incomingDataBuffer = Buffer.from([]);
         // console.log("TTBluetoothDevice disconnected", this.device?.id);
         this.emit("disconnected");
     }
@@ -124,41 +123,41 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         }
     }
     async subscribe() {
+        console.log("[SUBSCRIBE v0.6.1] subscribe() called");
         if (typeof this.device != "undefined") {
             let service;
             if (this.device.services.has("1910")) {
                 service = this.device.services.get("1910");
+                console.log("[SUBSCRIBE] Found service 1910");
             }
             if (typeof service != "undefined") {
-                await service.readCharacteristics();
+                // Check if characteristics are already loaded
+                if (service.characteristics.size === 0) {
+                    console.log("[SUBSCRIBE] Reading characteristics...");
+                    await service.readCharacteristics();
+                }
+                console.log("[SUBSCRIBE] Characteristics:", Array.from(service.characteristics.keys()));
                 if (service.characteristics.has("fff4")) {
                     const characteristic = service.characteristics.get("fff4");
                     if (typeof characteristic != "undefined") {
-                        console.log(`[${new Date().toISOString().substr(11, 12)}] Subscribing to fff4 notifications`);
+                        console.log("[SUBSCRIBE] Found characteristic fff4, subscribing...");
                         await characteristic.subscribe();
+                        console.log("[SUBSCRIBE] Subscribe completed");
                         characteristic.on("dataRead", this.onIncomingData.bind(this));
+                        console.log("[SUBSCRIBE] dataRead listener attached");
                         
-                        // CCCD descriptor write - required for proper BLE notification setup
-                        // Android SDK writes ENABLE_NOTIFICATION_VALUE to descriptor 0x2902
-                        console.log(`[${new Date().toISOString().substr(11, 12)}] Discovering descriptors for fff4`);
-                        await characteristic.discoverDescriptors();
-                        const descriptor = characteristic.descriptors.get("2902");
-                        if (typeof descriptor != "undefined") {
-                            console.log(`[${new Date().toISOString().substr(11, 12)}] Writing CCCD descriptor 0x2902 to enable notifications`);
-                            await descriptor.writeValue(Buffer.from([0x01, 0x00])); // Little Endian: ENABLE_NOTIFICATION_VALUE
-                            console.log(`[${new Date().toISOString().substr(11, 12)}] CCCD descriptor written successfully`);
-                        } else {
-                            console.log(`[${new Date().toISOString().substr(11, 12)}] Warning: CCCD descriptor 0x2902 not found`);
-                        }
+                        // Note: For websocket gateway, characteristic.subscribe() already
+                        // sends the 'notify' command which should enable CCCD.
+                        // Skipping manual descriptor discovery as it may timeout.
                         
-                        // Small delay after subscription to let the lock process the notification setup
-                        await (0, timingUtil_1.sleep)(100);
-                        console.log(`[${new Date().toISOString().substr(11, 12)}] Subscribe complete`);
                         return true;
                     }
+                } else {
+                    console.log("[SUBSCRIBE] ERROR: fff4 characteristic not found!");
                 }
             }
         }
+        console.log("[SUBSCRIBE] returning false - something went wrong");
         return false;
     }
     async sendCommand(command, waitForResponse = true, ignoreCrc = false) {
@@ -167,8 +166,9 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
             throw new Error("Command already in progress");
         }
         if (this.responses.length > 0) {
-            // should this be an error ?
-            throw new Error("Unprocessed responses");
+            // Clear unprocessed responses (like SearchBicycleStatusCommand sent after unlock/lock)
+            console.log("[sendCommand] Clearing", this.responses.length, "unprocessed response(s)");
+            this.responses = [];
         }
         const commandData = command.buildCommandBuffer();
         if (commandData) {
@@ -188,9 +188,9 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
                         this.waitingForResponse = true;
                         do {
                             if (retry > 0) {
-                                // wait a bit before retry - increased from 200ms to 500ms
-                                console.log(`Retry ${retry} after delay`);
-                                await (0, timingUtil_1.sleep)(500);
+                                // wait a bit before retry
+                                // console.log("Sleeping a bit");
+                                await (0, timingUtil_1.sleep)(200);
                             }
                             const written = await this.writeCharacteristic(characteristic, data);
                             if (!written) {
@@ -200,20 +200,14 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
                                 this.responses = [];
                                 throw new Error("Unable to send data to lock");
                             }
-                            // wait for a response with timeout protection
+                            // wait for a response
                             // console.log("Waiting for response");
                             let cycles = 0;
-                            const maxCycles = 200; // 10 second timeout (200 * 50ms)
-                            while (this.responses.length == 0 && this.connected && cycles < maxCycles) {
+                            while (this.responses.length == 0 && this.connected) {
                                 cycles++;
-                                await (0, timingUtil_1.sleep)(50);
+                                await (0, timingUtil_1.sleep)(5);
                             }
-                            // console.log("Waited for a response for", cycles, "=", cycles * 50, "ms");
-                            if (cycles >= maxCycles) {
-                                this.waitingForResponse = false;
-                                this.responses = [];
-                                throw new Error("Command timeout waiting for response");
-                            }
+                            // console.log("Waited for a response for", cycles, "=", cycles * 5, "ms");
                             if (!this.connected) {
                                 this.waitingForResponse = false;
                                 this.responses = [];
@@ -272,6 +266,64 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         this.waitingForResponse = false;
         return response;
     }
+    /**
+     * Wait for and consume any pending notifications (like SearchBicycleStatusCommand)
+     * that the lock sends automatically after unlock/lock operations.
+     * @param timeout Timeout to wait in ms
+     */
+    async consumePendingNotifications(timeout = 500) {
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeout) {
+            if (this.responses.length > 0) {
+                const notification = this.responses.pop();
+                console.log("Received:", notification);
+                // Reset timer to catch any additional notifications
+                await (0, timingUtil_1.sleep)(100);
+            } else {
+                await (0, timingUtil_1.sleep)(50);
+            }
+        }
+    }
+    /**
+     * Wait for SearchBicycleStatusCommand confirmation after unlock/lock.
+     * This is the REAL confirmation that the operation completed.
+     * @param aesKey AES key for decryption
+     * @param expectedStatus Expected lock status (0=locked, 1=unlocked)
+     * @param timeout Timeout to wait in ms
+     * @returns Lock status from confirmation, or -1 if timeout
+     */
+    async waitForStatusConfirmation(aesKey, expectedStatus = -1, timeout = 2000) {
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeout) {
+            if (this.responses.length > 0) {
+                const envelope = this.responses.pop();
+                if (envelope) {
+                    envelope.setAesKey(aesKey);
+                    const cmd = envelope.getCommand();
+                    // Check if this is a SearchBicycleStatusCommand (commandType 0x14)
+                    if (typeof cmd.getLockStatus === 'function') {
+                        const status = cmd.getLockStatus();
+                        console.log("[StatusConfirmation] Lock status:", status === 1 ? "UNLOCKED" : "LOCKED");
+                        this.lastCommandTime = Date.now();
+                        return status;
+                    }
+                }
+            }
+            await (0, timingUtil_1.sleep)(50);
+        }
+        console.log("[StatusConfirmation] Timeout waiting for status confirmation");
+        this.lastCommandTime = Date.now();
+        return -1;
+    }
+    /**
+     * Ensure minimum delay between commands
+     */
+    async ensureCommandDelay() {
+        const elapsed = Date.now() - this.lastCommandTime;
+        if (elapsed < this.minCommandInterval) {
+            await (0, timingUtil_1.sleep)(this.minCommandInterval - elapsed);
+        }
+    }
     async writeCharacteristic(characteristic, data) {
         if (process.env.TTLOCK_DEBUG_COMM == "1") {
             console.log("Sending command:", data.toString("hex"));
@@ -283,14 +335,9 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
             if (!written) {
                 return false;
             }
-            // Delay between MTU fragments (like Android SDK)
-            if (index + MTU < data.length) {
-                await (0, timingUtil_1.sleep)(20);
-            }
+            // await sleep(10);
             index += MTU;
         } while (index < data.length);
-        // Post-write delay to allow lock to process (Android SDK has 2500-5500ms)
-        await (0, timingUtil_1.sleep)(100);
         return true;
     }
     onIncomingData(data) {
@@ -312,10 +359,9 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
                         this.responses.push(command);
                     }
                     else {
-                        // discard unsolicited messages if CRC is not ok
-                        if (command.isCrcOk()) {
-                            this.emit("dataReceived", command);
-                        }
+                        // Some lock firmware sends notifications with bad CRC but valid data
+                        // Don't discard them - let upper layers decide what to do
+                        this.emit("dataReceived", command);
                     }
                 }
                 catch (error) {

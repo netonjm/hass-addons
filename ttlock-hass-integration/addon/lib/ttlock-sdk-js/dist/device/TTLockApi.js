@@ -73,6 +73,12 @@ class TTLockApi extends events_1.EventEmitter {
         if (typeof data.operationLog != "undefined") {
             this.operationLog = data.operationLog;
         }
+        if (typeof data.autoLockTime != "undefined") {
+            this.autoLockTime = data.autoLockTime;
+        }
+        if (typeof data.lockedStatus != "undefined") {
+            this.lockedStatus = data.lockedStatus;
+        }
         this.initialized = true;
     }
     /**
@@ -143,8 +149,9 @@ class TTLockApi extends events_1.EventEmitter {
         if (responseEnvelope) {
             responseEnvelope.setAesKey(aesKey);
             const cmd = responseEnvelope.getCommand();
+            console.log("[DEBUG AddAdmin] Response code:", cmd.getResponse(), "Expected SUCCESS:", CommandResponse_1.CommandResponse.SUCCESS);
             if (cmd.getResponse() != CommandResponse_1.CommandResponse.SUCCESS) {
-                throw new Error("Failed AddAdmin");
+                throw new Error("Failed AddAdmin - response code: " + cmd.getResponse());
             }
             return admin;
         }
@@ -620,8 +627,21 @@ class TTLockApi extends events_1.EventEmitter {
         if (responseEnvelope) {
             responseEnvelope.setAesKey(aesKey);
             cmd = responseEnvelope.getCommand();
+            // Verify we got the right response type
+            if (typeof cmd.getPsFromLock !== 'function') {
+                console.log("[checkUserTime] Wrong response type, retrying...");
+                // Got wrong response (e.g. SearchBicycleStatusCommand), retry once
+                const retryEnvelope = await this.device.sendCommand(requestEnvelope);
+                if (retryEnvelope) {
+                    retryEnvelope.setAesKey(aesKey);
+                    cmd = retryEnvelope.getCommand();
+                }
+            }
             if (cmd.getResponse() != CommandResponse_1.CommandResponse.SUCCESS) {
                 throw new Error("Failed checkUserTime response");
+            }
+            if (typeof cmd.getPsFromLock !== 'function') {
+                throw new Error("Invalid checkUserTime response type");
             }
             return cmd.getPsFromLock();
         }
@@ -641,16 +661,39 @@ class TTLockApi extends events_1.EventEmitter {
         if (typeof this.privateData.admin == "undefined" || typeof this.privateData.admin.unlockKey == "undefined") {
             throw new Error("Admin data is not set");
         }
+        console.log("[DEBUG unlock] psFromLock:", psFromLock);
+        console.log("[DEBUG unlock] unlockKey:", this.privateData.admin.unlockKey);
+        console.log("[DEBUG unlock] adminPs:", this.privateData.admin.adminPs);
+        console.log("[DEBUG unlock] aesKey:", aesKey.toString('hex'));
+        console.log("[DEBUG unlock] lockType:", this.device.lockType);
         const requestEnvelope = __1.CommandEnvelope.createFromLockType(this.device.lockType, aesKey);
         requestEnvelope.setCommandType(CommandType_1.CommandType.COMM_UNLOCK);
         let cmd = requestEnvelope.getCommand();
         cmd.setSum(psFromLock, this.privateData.admin.unlockKey);
+        console.log("[DEBUG unlock] Command sum set, sending...");
         const responseEnvelope = await this.device.sendCommand(requestEnvelope);
         if (responseEnvelope) {
             responseEnvelope.setAesKey(aesKey);
             cmd = responseEnvelope.getCommand();
+            console.log("[DEBUG unlock] Response code:", cmd.getResponse(), "Expected SUCCESS:", CommandResponse_1.CommandResponse.SUCCESS);
+            console.log("[DEBUG unlock] CRC ok:", responseEnvelope.isCrcOk());
+            console.log("[DEBUG unlock] Command data:", cmd.commandData ? cmd.commandData.toString('hex') : 'none');
             if (cmd.getResponse() != CommandResponse_1.CommandResponse.SUCCESS) {
-                throw new Error("Failed unlock response");
+                const errorCode = cmd.commandData ? cmd.commandData.readUInt8(0) : -1;
+                const errorMessages = {
+                    0x02: 'NO_PERMISSION',
+                    0x03: 'WRONG_ID_OR_PASSWORD',
+                    0x04: 'REACH_LIMIT',
+                    0x05: 'IN_SETTING',
+                    0x06: 'SAME_USERID',
+                    0x07: 'NO_ADMIN_YET',
+                    0x08: 'DYNAMIC_PASSWORD_EXPIRED',
+                    0x09: 'NO_DATA',
+                    0x0a: 'LOCK_NO_POWER',
+                    0x1e: 'PRIVACY_LOCK_ACTIVE - El bloqueo de privacidad está activo desde el interior. Desactívalo manualmente.'
+                };
+                const errorName = errorMessages[errorCode] || 'UNKNOWN';
+                throw new Error("Failed unlock response (code: " + cmd.getResponse() + ", error: 0x" + errorCode.toString(16) + " " + errorName + ")");
             }
             // it is possible here that the UnlockCommand will have a bad CRC 
             // and we will read a SearchBicycleStatusCommand that is sent right after instead
