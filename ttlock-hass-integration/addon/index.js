@@ -1,7 +1,7 @@
 'use strict';
 
 console.log('===========================================');
-console.log('TTLock Addon v0.5.7 - CCCD descriptor fix');
+console.log('TTLock Addon v0.6.1 - CCCD descriptor fix');
 console.log('===========================================');
 
 // Catch errors from noble

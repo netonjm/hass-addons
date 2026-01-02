@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.1] - 2026-01-02
+- **Version Sync**: Synchronize all package.json versions
+- **Startup Banner**: Add version banner at startup for verification
+
 ## [0.5.7] - 2026-01-02
 - **CCCD Descriptor Fix**: Enable explicit write to CCCD descriptor (0x2902) for BLE notifications
   - Android SDK requires writing `ENABLE_NOTIFICATION_VALUE` to descriptor 0x2902 before notifications work
