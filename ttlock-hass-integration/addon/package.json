@@ -1,6 +1,6 @@
 {
   "name": "ttlock-hass-integration",
-  "version": "0.2.1",
+  "version": "0.5.7",
   "description": "Integration of the offline TTLock sdk into Home Assistant",
   "main": "index.js",
   "scripts": {
@@ -27,9 +27,9 @@
   "author": "Emanuel Posescu <kind3r@gmail.com>",
   "license": "GPL-3.0",
   "bugs": {
-    "url": "https://github.com/kind3r/hass-addons/issues"
+    "url": "https://github.com/netonjm/hass-addons/issues"
   },
-  "homepage": "https://github.com/kind3r/hass-addons/tree/master/ttlock-hass-integration",
+  "homepage": "https://github.com/netonjm/hass-addons/tree/master/ttlock-hass-integration",
   "dependencies": {
     "async-mqtt": "^2.6.1",
     "express": "^4.17.1",
