@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.7] - 2026-01-02
+- **CCCD Descriptor Fix**: Enable explicit write to CCCD descriptor (0x2902) for BLE notifications
+  - Android SDK requires writing `ENABLE_NOTIFICATION_VALUE` to descriptor 0x2902 before notifications work
+  - This was previously commented out as "does not seem to be required" but is critical for ESP32 gateways
+  - Matches Android SDK behavior: `BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE`
+- **Subscribe Flow**: Add descriptor discovery and write step in subscribe sequence
+- **Post-Subscribe Delay**: Add 100ms delay after subscription to let lock process notification setup
+
 ## [0.5.6] - 2026-01-02
 - **Debug Logging**: Add timestamps to connection flow logs for troubleshooting
 - **Timing Adjustment**: Reduce post-connection delay from 500ms to 200ms

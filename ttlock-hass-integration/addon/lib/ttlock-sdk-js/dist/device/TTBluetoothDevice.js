@@ -134,16 +134,26 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
                 if (service.characteristics.has("fff4")) {
                     const characteristic = service.characteristics.get("fff4");
                     if (typeof characteristic != "undefined") {
+                        console.log(`[${new Date().toISOString().substr(11, 12)}] Subscribing to fff4 notifications`);
                         await characteristic.subscribe();
                         characteristic.on("dataRead", this.onIncomingData.bind(this));
-                        // does not seem to be required
-                        // await characteristic.discoverDescriptors();
-                        // const descriptor = characteristic.descriptors.get("2902");
-                        // if (typeof descriptor != "undefined") {
-                        //   console.log("Subscribing to descriptor notifications");
-                        //   await descriptor.writeValue(Buffer.from([0x01, 0x00])); // BE
-                        //   // await descriptor.writeValue(Buffer.from([0x00, 0x01])); // LE
-                        // }
+                        
+                        // CCCD descriptor write - required for proper BLE notification setup
+                        // Android SDK writes ENABLE_NOTIFICATION_VALUE to descriptor 0x2902
+                        console.log(`[${new Date().toISOString().substr(11, 12)}] Discovering descriptors for fff4`);
+                        await characteristic.discoverDescriptors();
+                        const descriptor = characteristic.descriptors.get("2902");
+                        if (typeof descriptor != "undefined") {
+                            console.log(`[${new Date().toISOString().substr(11, 12)}] Writing CCCD descriptor 0x2902 to enable notifications`);
+                            await descriptor.writeValue(Buffer.from([0x01, 0x00])); // Little Endian: ENABLE_NOTIFICATION_VALUE
+                            console.log(`[${new Date().toISOString().substr(11, 12)}] CCCD descriptor written successfully`);
+                        } else {
+                            console.log(`[${new Date().toISOString().substr(11, 12)}] Warning: CCCD descriptor 0x2902 not found`);
+                        }
+                        
+                        // Small delay after subscription to let the lock process the notification setup
+                        await (0, timingUtil_1.sleep)(100);
+                        console.log(`[${new Date().toISOString().substr(11, 12)}] Subscribe complete`);
                         return true;
                     }
                 }
