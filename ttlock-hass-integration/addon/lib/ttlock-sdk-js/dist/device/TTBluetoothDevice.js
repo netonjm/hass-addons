@@ -44,31 +44,35 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         if (typeof this.device != "undefined" && this.device.connectable) {
             // stop scan
             await this.scanner.stopScan();
+            console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device connect() starting`);
             if (await this.device.connect()) {
                 // TODO: something happens here (disconnect) and it's stuck in limbo
-                console.log("BLE Device reading basic info");
+                console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device reading basic info`);
                 await this.readBasicInfo();
-                console.log("BLE Device read basic info");
+                console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device read basic info`);
                 const subscribed = await this.subscribe();
-                console.log("BLE Device subscribed");
+                console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device subscribed`);
                 if (!subscribed) {
                     await this.device.disconnect();
                     return false;
                 }
                 else {
                     // Post-connection delay to stabilize (like Android SDK)
-                    await (0, timingUtil_1.sleep)(500);
+                    console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device post-connection delay start`);
+                    await (0, timingUtil_1.sleep)(200);
+                    console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device post-connection delay end, setting connected=true`);
                     this.connected = true;
                     this.emit("connected");
+                    console.log(`[${new Date().toISOString().substr(11, 12)}] BLE Device emitted connected event`);
                     return true;
                 }
             }
             else {
-                console.log("Connect failed");
+                console.log(`[${new Date().toISOString().substr(11, 12)}] Connect failed`);
             }
         }
         else {
-            console.log("Missing device or not connectable");
+            console.log(`[${new Date().toISOString().substr(11, 12)}] Missing device or not connectable`);
         }
         return false;
     }
@@ -80,6 +84,7 @@ class TTBluetoothDevice extends TTDevice_1.TTDevice {
         // console.log("TTBluetoothDevice connected", this.device?.id);
     }
     async onDeviceDisconnected() {
+        console.log(`[${new Date().toISOString().substr(11, 12)}] TTBluetoothDevice.onDeviceDisconnected() called`);
         this.connected = false;
         // Reset state to prevent "Command already in progress" errors
         this.waitingForResponse = false;

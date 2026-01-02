@@ -1225,6 +1225,7 @@ class TTLock extends TTLockApi_1.TTLockApi {
         }
     }
     async onConnected() {
+        console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.onConnected() called, isPaired=`, this.isPaired(), "skipDataRead=", this.skipDataRead);
         if (this.isPaired() && !this.skipDataRead) {
             // read general data
             console.log("Connected to known lock, reading general data");
@@ -1267,9 +1268,13 @@ class TTLock extends TTLockApi_1.TTLockApi {
             }
         }
         // are we still connected ? It is possible the lock will disconnect while reading general data
+        console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.onConnected() check device.connected=`, this.device.connected);
         if (this.device.connected) {
             this.connected = true;
+            console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.connected set to true, emitting connected`);
             this.emit("connected", this);
+        } else {
+            console.log(`[${new Date().toISOString().substr(11, 12)}] TTLock.onConnected() device disconnected during setup, not setting connected`);
         }
     }
     async onDisconnected() {
