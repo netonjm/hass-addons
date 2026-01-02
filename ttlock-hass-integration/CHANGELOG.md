@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.5.6] - 2026-01-02
+- **Debug Logging**: Add timestamps to connection flow logs for troubleshooting
+- **Timing Adjustment**: Reduce post-connection delay from 500ms to 200ms
+
 ## [0.5.5] - 2026-01-02
 - **BLE Timing Fixes**: Add timing delays based on Android SDK protocol analysis
   - Add 500ms post-connection delay for BLE stabilization
