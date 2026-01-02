@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2] - 2026-01-02
+- **Audio Control**: Add mute/unmute/getsound commands to test script
+- **Feature Detection**: Dynamic featureList loading when not cached
+- **CRC Fix**: Allow notifications with invalid CRC (lock firmware quirk)
+- **Status Confirmation**: Fix SearchBicycleStatusCommand detection by checking first byte = 0x14
+- **Debug Logging**: Make debug output conditional on TTLOCK_DEBUG env var
+
 ## [0.6.1] - 2026-01-02
 - **Version Sync**: Synchronize all package.json versions
 - **Startup Banner**: Add version banner at startup for verification
