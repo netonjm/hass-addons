@@ -1,5 +1,9 @@
 'use strict';
 
+console.log('===========================================');
+console.log('TTLock Addon v0.5.7 - CCCD descriptor fix');
+console.log('===========================================');
+
 // Catch errors from noble
 process.on('uncaughtException', (error, promise) => {
   console.error('uncaughtException catch:', promise);
