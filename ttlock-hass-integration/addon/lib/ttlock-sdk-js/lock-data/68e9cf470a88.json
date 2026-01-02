@@ -1,0 +1,16 @@
+{
+  "address": "68:E9:CF:47:0A:88",
+  "battery": 59,
+  "rssi": -65,
+  "autoLockTime": 0,
+  "lockedStatus": 0,
+  "privateData": {
+    "aesKey": "67000b772e68a467c32e5203650ba43b",
+    "admin": {
+      "adminPs": 81062887,
+      "unlockKey": 78219968
+    },
+    "adminPasscode": "4136992"
+  },
+  "operationLog": []
+}
